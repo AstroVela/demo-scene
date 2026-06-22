@@ -1,0 +1,17 @@
+include README.md
+include requirements.txt
+include constraints.txt
+recursive-include scripts *.py
+recursive-include tests *.py
+global-exclude *.py[cod]
+global-exclude __pycache__/*
+prune .venv
+prune .pytest_cache
+prune build
+prune dist
+prune *.egg-info
+prune workspace
+prune outputs-baseline
+prune outputs-semantic
+prune run-baseline
+prune run-standardized-baseline
