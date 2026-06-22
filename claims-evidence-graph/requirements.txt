@@ -1,0 +1,7 @@
+--index-url https://pypi.org/simple/
+# The current vane-ai dev wheel is published on TestPyPI. Public dependencies
+# are constrained below so setup.sh does not float across either index.
+--extra-index-url https://test.pypi.org/simple/
+--constraint constraints.txt
+
+-e .[test]
