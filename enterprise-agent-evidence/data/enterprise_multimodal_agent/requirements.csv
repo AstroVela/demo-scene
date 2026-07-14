@@ -1,0 +1,9 @@
+case_id,evidence_type
+case-arrow-docs,document
+case-arrow-docs,text
+case-wikimedia-media,image
+case-wikimedia-media,audio
+case-incomplete-bundle,document
+case-incomplete-bundle,image
+case-incomplete-bundle,audio
+case-stale-docs,text

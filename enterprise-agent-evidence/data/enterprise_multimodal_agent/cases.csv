@@ -1,0 +1,5 @@
+case_id,account_id,business_question,review_due_at
+case-arrow-docs,PUBLIC-ARROW,Can the pinned Apache Arrow documentation enter the enterprise agent context?,2026-07-20
+case-wikimedia-media,PUBLIC-WIKIMEDIA,Is the Wikimedia media evidence internally consistent and usable?,2026-07-20
+case-incomplete-bundle,PUBLIC-MIXED,Does the mixed public evidence bundle contain every required modality?,2026-07-20
+case-stale-docs,PUBLIC-ARROW,Does the documentation evidence need a freshness review?,2026-07-20
