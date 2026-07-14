@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned public-source snapshot used by multimodal training data."""
+"""Build the pinned public-asset snapshot used by enterprise evidence governance."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = REPO_ROOT / "data" / "multimodal_training_data"
-DEFAULT_SOURCE_MANIFEST = DATA_DIR / "public_sources.csv"
-DEFAULT_OUTPUT_MANIFEST = DATA_DIR / "training_assets.csv"
-DEFAULT_SNAPSHOT_METADATA = DATA_DIR / "public_snapshot.json"
+DATA_DIR = REPO_ROOT / "data" / "enterprise_multimodal_agent"
+DEFAULT_SOURCE_MANIFEST = DATA_DIR / "asset_sources.csv"
+DEFAULT_ASSET_CATALOG = DATA_DIR / "asset_catalog.csv"
+DEFAULT_SNAPSHOT_METADATA = DATA_DIR / "asset_snapshot.json"
 MAX_ASSET_BYTES = 5 * 1024 * 1024
-USER_AGENT = "VaneExamplesDataSnapshot/1.0"
+USER_AGENT = "VaneEnterpriseEvidenceSnapshot/1.0"
 OUTPUT_COLUMNS = (
     "record_id",
     "modality",
@@ -127,7 +127,7 @@ def enriched_metadata(row: dict[str, str]) -> str:
     return json.dumps(metadata, sort_keys=True)
 
 
-def write_training_manifest(path: Path, rows: list[dict[str, str]]) -> None:
+def write_asset_catalog(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as output_file:
         writer = csv.DictWriter(
@@ -158,15 +158,15 @@ def write_snapshot_metadata(
     path: Path,
     *,
     source_manifest: Path,
-    output_manifest: Path,
+    asset_catalog: Path,
     assets: list[dict[str, Any]],
 ) -> None:
     payload = {
-        "dataset": "multimodal_training_data_public_snapshot",
+        "dataset": "enterprise_agent_evidence_asset_snapshot",
         "source_manifest": display_path(source_manifest),
         "source_manifest_sha256": file_sha256(source_manifest),
-        "training_manifest": display_path(output_manifest),
-        "training_manifest_sha256": file_sha256(output_manifest),
+        "asset_catalog": display_path(asset_catalog),
+        "asset_catalog_sha256": file_sha256(asset_catalog),
         "records": len(assets),
         "modalities": sorted({asset["modality"] for asset in assets}),
         "assets": assets,
@@ -179,7 +179,7 @@ def write_snapshot_metadata(
 
 def prepare(args: argparse.Namespace) -> None:
     source_manifest = Path(args.source_manifest)
-    output_manifest = Path(args.output_manifest)
+    asset_catalog = Path(args.asset_catalog)
     snapshot_metadata = Path(args.snapshot_metadata)
     rows = read_sources(source_manifest)
     assets: list[dict[str, Any]] = []
@@ -200,24 +200,24 @@ def prepare(args: argparse.Namespace) -> None:
             }
         )
 
-    write_training_manifest(output_manifest, rows)
+    write_asset_catalog(asset_catalog, rows)
     write_snapshot_metadata(
         snapshot_metadata,
         source_manifest=source_manifest,
-        output_manifest=output_manifest,
+        asset_catalog=asset_catalog,
         assets=assets,
     )
     print(f"Public assets: {len(assets)}")
-    print(f"Training manifest: {display_path(output_manifest)}")
+    print(f"Asset catalog: {display_path(asset_catalog)}")
     print(f"Snapshot metadata: {display_path(snapshot_metadata)}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build the reproducible public multimodal asset snapshot.",
+        description="Build the reproducible public asset snapshot for the enterprise example.",
     )
     parser.add_argument("--source-manifest", default=str(DEFAULT_SOURCE_MANIFEST))
-    parser.add_argument("--output-manifest", default=str(DEFAULT_OUTPUT_MANIFEST))
+    parser.add_argument("--asset-catalog", default=str(DEFAULT_ASSET_CATALOG))
     parser.add_argument("--snapshot-metadata", default=str(DEFAULT_SNAPSHOT_METADATA))
     parser.add_argument(
         "--refresh",

@@ -30,7 +30,7 @@ data/enterprise_multimodal_agent/ contains three scenario tables and their audit
 | evidence_links.csv | Case-to-asset links, observation dates, and claims |
 | scenario_snapshot.json | Data classification, schemas, row counts, hashes, and expected demo results |
 
-The default --asset-catalog is data/multimodal_training_data/training_assets.csv. An evidence link contains an asset identifier rather than copied payload text:
+The default `--asset-catalog` is `data/enterprise_multimodal_agent/asset_catalog.csv`. An evidence link contains an asset identifier rather than copied payload text:
 
 ~~~text
 record_id, case_id, asset_id, source_system, observed_at,
@@ -218,10 +218,10 @@ Cases requiring review: 3
 Output directory: output/enterprise_multimodal_agent
 ~~~
 
-Refresh and verify the shared public snapshot:
+Refresh and verify the public asset snapshot:
 
 ~~~bash
-.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh
+.venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
 Use --input-dir for another scenario and --asset-catalog for another governed asset manifest. --execution-backend can pin subprocess_task or ray_task. The Relation SQL path currently requires the native runner.
@@ -242,5 +242,5 @@ Focused verification:
 
 ## Data notes
 
-- The five media files come from Apache Arrow and Wikimedia Commons. Their source versions, license metadata, and SHA-256 values are recorded in `data/multimodal_training_data/public_sources.csv` and `public_snapshot.json`.
+- The five media files come from Apache Arrow and Wikimedia Commons. Their source versions, license metadata, and SHA-256 values are recorded in `data/enterprise_multimodal_agent/asset_sources.csv` and `asset_snapshot.json`.
 - The four cases, eight requirements, and eight evidence links are fixed demo data. `scenario_snapshot.json` pins their schemas, row counts, hashes, and expected results.

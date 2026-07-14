@@ -1,4 +1,6 @@
 {
+  "asset_catalog": "data/enterprise_multimodal_agent/asset_catalog.csv",
+  "asset_catalog_sha256": "57f229d44770365d02f128497a8cef80606013720baed8dc7dc07c5be83e0191",
   "assets": [
     {
       "byte_size": 5045,
@@ -7,7 +9,7 @@
       "modality": "document",
       "record_id": "arrow-project-readme",
       "sha256": "8a7a539f7d2162b3bd344326f8f69288659dab8cd09c1bac0c469ff9fc27e1a4",
-      "snapshot_path": "data/multimodal_training_data/assets/arrow-readme.md",
+      "snapshot_path": "data/enterprise_multimodal_agent/assets/arrow-readme.md",
       "source_page_uri": "https://github.com/apache/arrow/blob/apache-arrow-18.1.0/README.md",
       "source_uri": "https://raw.githubusercontent.com/apache/arrow/apache-arrow-18.1.0/README.md",
       "source_version": "apache-arrow-18.1.0"
@@ -19,7 +21,7 @@
       "modality": "text",
       "record_id": "arrow-python-readme",
       "sha256": "6ed588e762f99bcedde4377bd31b653b1f46711f135df70a97bad53ecd95ca69",
-      "snapshot_path": "data/multimodal_training_data/assets/arrow-python-readme.md",
+      "snapshot_path": "data/enterprise_multimodal_agent/assets/arrow-python-readme.md",
       "source_page_uri": "https://github.com/apache/arrow/blob/apache-arrow-18.1.0/python/README.md",
       "source_uri": "https://raw.githubusercontent.com/apache/arrow/apache-arrow-18.1.0/python/README.md",
       "source_version": "apache-arrow-18.1.0"
@@ -31,7 +33,7 @@
       "modality": "image",
       "record_id": "wikimedia-generic-file",
       "sha256": "f293f1fcd6d44be3624ed6bcc63bd91379729c10365ffd1182c6b2721b570431",
-      "snapshot_path": "data/multimodal_training_data/assets/generic-file.svg",
+      "snapshot_path": "data/enterprise_multimodal_agent/assets/generic-file.svg",
       "source_page_uri": "https://commons.wikimedia.org/w/index.php?title=File:Generic_File.svg&oldid=1132223570",
       "source_uri": "https://upload.wikimedia.org/wikipedia/commons/a/af/Generic_File.svg",
       "source_version": "1132223570"
@@ -43,7 +45,7 @@
       "modality": "image",
       "record_id": "wikimedia-download-icon",
       "sha256": "5405afc5610c214d82ac905e1a10091ba6d94f9d3fac3873f88db83928c689f0",
-      "snapshot_path": "data/multimodal_training_data/assets/download.svg",
+      "snapshot_path": "data/enterprise_multimodal_agent/assets/download.svg",
       "source_page_uri": "https://commons.wikimedia.org/w/index.php?title=File:Download.svg&oldid=1012581370",
       "source_uri": "https://upload.wikimedia.org/wikipedia/commons/4/40/Download.svg",
       "source_version": "1012581370"
@@ -55,13 +57,13 @@
       "modality": "audio",
       "record_id": "wikimedia-audio",
       "sha256": "8640a316bbbd623fc678252dcc797165c8606a4643f5834cd8f03456d2cbc72e",
-      "snapshot_path": "data/multimodal_training_data/assets/audio.wav",
+      "snapshot_path": "data/enterprise_multimodal_agent/assets/audio.wav",
       "source_page_uri": "https://commons.wikimedia.org/w/index.php?title=File:Audio.wav&oldid=1135746966",
       "source_uri": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Audio.wav",
       "source_version": "1135746966"
     }
   ],
-  "dataset": "multimodal_training_data_public_snapshot",
+  "dataset": "enterprise_agent_evidence_asset_snapshot",
   "modalities": [
     "audio",
     "document",
@@ -69,8 +71,6 @@
     "text"
   ],
   "records": 5,
-  "source_manifest": "data/multimodal_training_data/public_sources.csv",
-  "source_manifest_sha256": "078ab106eff70030de5bd5c12745620f2df0aabc63efa2dfb6e147772c4c234d",
-  "training_manifest": "data/multimodal_training_data/training_assets.csv",
-  "training_manifest_sha256": "ca2544c0a68efd5079699e592f1a2908d453bdef998f3f5297551c4914834994"
+  "source_manifest": "data/enterprise_multimodal_agent/asset_sources.csv",
+  "source_manifest_sha256": "23a46799b43da135578a78c001f95226344b6f5d97d66d6ba7a15dd7bf750dd9"
 }

@@ -40,7 +40,7 @@ from _common import (
     table_from_rows,
     write_json,
 )
-from multimodal_training_data import (
+from _media import (
     MEDIA_METRICS_TYPE,
     SUPPORTED_MODALITIES,
     process_audio,
@@ -55,12 +55,8 @@ from multimodal_training_data import (
 
 DEFAULT_INPUT_DIR = REPO_ROOT / "data" / "enterprise_multimodal_agent"
 DEFAULT_SCENARIO_SNAPSHOT = DEFAULT_INPUT_DIR / "scenario_snapshot.json"
-DEFAULT_ASSET_CATALOG = (
-    REPO_ROOT / "data" / "multimodal_training_data" / "training_assets.csv"
-)
-PUBLIC_SNAPSHOT_METADATA = (
-    REPO_ROOT / "data" / "multimodal_training_data" / "public_snapshot.json"
-)
+DEFAULT_ASSET_CATALOG = DEFAULT_INPUT_DIR / "asset_catalog.csv"
+ASSET_SNAPSHOT_METADATA = DEFAULT_INPUT_DIR / "asset_snapshot.json"
 DEFAULT_OUTPUT_DIR = Path("output/enterprise_multimodal_agent")
 MODULE_NAME = "examples.enterprise_multimodal_agent"
 FRESHNESS_DAYS = 30
@@ -755,11 +751,11 @@ def write_artifacts(
                 file_sha256(DEFAULT_SCENARIO_SNAPSHOT) if default_scenario else ""
             ),
             "asset_snapshot_verified": default_assets,
-            "public_snapshot_metadata": (
-                display_path(PUBLIC_SNAPSHOT_METADATA) if default_assets else ""
+            "asset_snapshot_metadata": (
+                display_path(ASSET_SNAPSHOT_METADATA) if default_assets else ""
             ),
-            "public_snapshot_metadata_sha256": (
-                file_sha256(PUBLIC_SNAPSHOT_METADATA) if default_assets else ""
+            "asset_snapshot_metadata_sha256": (
+                file_sha256(ASSET_SNAPSHOT_METADATA) if default_assets else ""
             ),
             "source_files": sorted(
                 path.name
@@ -798,7 +794,7 @@ def run(args: argparse.Namespace) -> None:
     if input_dir.resolve() == DEFAULT_INPUT_DIR.resolve():
         verify_scenario_snapshot(input_dir, DEFAULT_SCENARIO_SNAPSHOT)
     if asset_catalog.resolve() == DEFAULT_ASSET_CATALOG.resolve():
-        verify_public_asset_snapshot(asset_catalog, PUBLIC_SNAPSHOT_METADATA)
+        verify_public_asset_snapshot(asset_catalog, ASSET_SNAPSHOT_METADATA)
 
     conn = vane.connect()
     cases, requirements, public_assets, evidence_links, modalities = materialize_sources(

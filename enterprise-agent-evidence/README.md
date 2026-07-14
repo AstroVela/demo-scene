@@ -94,7 +94,7 @@ custom-input behavior, and current example scope.
 Re-download the fixed public sources and verify their expected hashes with:
 
 ```bash
-.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh
+.venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ```
 
 This is the only operation that requires network access. A changed upstream
@@ -104,10 +104,9 @@ payload fails verification instead of silently replacing the snapshot.
 
 ```text
 enterprise-agent-evidence/
-├── data/enterprise_multimodal_agent/  # pinned synthetic scenarios
-├── data/multimodal_training_data/     # real public payload snapshot
+├── data/enterprise_multimodal_agent/  # pinned scenarios and public assets
 ├── docs/                              # English and Chinese tutorials
-├── examples/                          # pipeline and shared media processors
+├── examples/                          # governance pipeline and media helper
 ├── scripts/                           # public snapshot preparation
 ├── tests/                             # focused contract and failure tests
 ├── README.md

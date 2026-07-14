@@ -24,7 +24,7 @@ from examples.enterprise_multimodal_agent import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / "data" / "enterprise_multimodal_agent"
-ASSET_DIR = REPO_ROOT / "data" / "multimodal_training_data"
+ASSET_DIR = DATA_DIR
 
 
 def example_subprocess_env() -> dict[str, str]:
@@ -103,18 +103,18 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             )
             self.assertEqual(
                 manifest["asset_catalog"],
-                "data/multimodal_training_data/training_assets.csv",
+                "data/enterprise_multimodal_agent/asset_catalog.csv",
             )
             self.assertEqual(
                 manifest["scenario_snapshot_metadata"],
                 "data/enterprise_multimodal_agent/scenario_snapshot.json",
             )
             self.assertEqual(
-                manifest["public_snapshot_metadata"],
-                "data/multimodal_training_data/public_snapshot.json",
+                manifest["asset_snapshot_metadata"],
+                "data/enterprise_multimodal_agent/asset_snapshot.json",
             )
             self.assertEqual(len(manifest["scenario_snapshot_metadata_sha256"]), 64)
-            self.assertEqual(len(manifest["public_snapshot_metadata_sha256"]), 64)
+            self.assertEqual(len(manifest["asset_snapshot_metadata_sha256"]), 64)
             self.assertNotIn(str(REPO_ROOT), json.dumps(manifest))
 
             snapshot = json.loads(DEFAULT_SCENARIO_SNAPSHOT.read_text())
@@ -227,9 +227,9 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
                 self.assertTrue((output_dir / output_file).exists(), msg=output_file)
 
     def test_public_snapshot_links_and_hashes_are_auditable(self) -> None:
-        snapshot = json.loads((ASSET_DIR / "public_snapshot.json").read_text())
+        snapshot = json.loads((ASSET_DIR / "asset_snapshot.json").read_text())
         snapshot_assets = {row["record_id"]: row for row in snapshot["assets"]}
-        with (ASSET_DIR / "training_assets.csv").open(
+        with (ASSET_DIR / "asset_catalog.csv").open(
             newline="", encoding="utf-8"
         ) as file:
             catalog = {row["record_id"]: row for row in csv.DictReader(file)}
@@ -255,6 +255,17 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             actual_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
             self.assertEqual(actual_sha256, catalog_row["expected_sha256"])
             self.assertEqual(actual_sha256, snapshot_assets[asset_id]["sha256"])
+
+    def test_enterprise_assets_do_not_embed_the_training_data_example(self) -> None:
+        self.assertFalse((REPO_ROOT / "data" / "multimodal_training_data").exists())
+        self.assertFalse(
+            (REPO_ROOT / "examples" / "multimodal_training_data.py").exists()
+        )
+        self.assertTrue((REPO_ROOT / "examples" / "_media.py").is_file())
+        self.assertTrue((DATA_DIR / "assets").is_dir())
+        self.assertTrue(
+            (REPO_ROOT / "scripts" / "prepare_enterprise_agent_assets.py").is_file()
+        )
 
     def test_scenario_snapshot_rejects_tampered_csv(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-enterprise-snapshot-") as tmp_dir:
@@ -352,8 +363,8 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
 
     def test_unreferenced_catalog_asset_is_not_processed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-enterprise-catalog-") as tmp_dir:
-            custom_catalog = Path(tmp_dir) / "training_assets.csv"
-            with (ASSET_DIR / "training_assets.csv").open(
+            custom_catalog = Path(tmp_dir) / "asset_catalog.csv"
+            with (ASSET_DIR / "asset_catalog.csv").open(
                 newline="", encoding="utf-8"
             ) as input_file:
                 reader = csv.DictReader(input_file)
@@ -434,7 +445,7 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertIn(".write_parquet(", text, msg=str(path))
             self.assertIn("evidence_gaps", text, msg=str(path))
             self.assertIn("evidence_conflicts", text, msg=str(path))
-            self.assertIn("public_snapshot", text, msg=str(path))
+            self.assertIn("asset_snapshot", text, msg=str(path))
             self.assertIn("evidence_links.csv", text, msg=str(path))
             if path.suffix == ".md":
                 self.assertIn("invalid_utf8", text, msg=str(path))

@@ -30,7 +30,7 @@
 | evidence_links.csv | 案例与公共资产之间的链接、观察时间和断言 |
 | scenario_snapshot.json | 数据分类、schema、行数、哈希和预期结果 |
 
-`--asset-catalog` 默认指向公共资产清单 `data/multimodal_training_data/training_assets.csv`。`evidence_links.csv` 不复制文件正文，只保存 `asset_id`：
+`--asset-catalog` 默认指向 `data/enterprise_multimodal_agent/asset_catalog.csv`。`evidence_links.csv` 不复制文件正文，只保存 `asset_id`：
 
 ~~~text
 record_id, case_id, asset_id, source_system, observed_at,
@@ -234,7 +234,7 @@ Output directory: output/enterprise_multimodal_agent
 重新下载并验证公共来源：
 
 ~~~bash
-.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh
+.venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
 自定义场景使用 `--input-dir`，自定义资产清单使用 `--asset-catalog`。`--execution-backend` 可以固定为 `subprocess_task` 或 `ray_task`；当前 Relation SQL 仍要求 `native` runner。
@@ -255,5 +255,5 @@ Output directory: output/enterprise_multimodal_agent
 
 ## 数据说明
 
-- 5 个媒体文件来自 Apache Arrow 和 Wikimedia Commons，来源版本、许可证信息和 SHA-256 记录在 `data/multimodal_training_data/public_sources.csv` 与 `public_snapshot.json` 中。
+- 5 个媒体文件来自 Apache Arrow 和 Wikimedia Commons，来源版本、许可证信息和 SHA-256 记录在 `data/enterprise_multimodal_agent/asset_sources.csv` 与 `asset_snapshot.json` 中。
 - 4 个案例、8 项要求和 8 条证据链接是固定的演示数据，`scenario_snapshot.json` 记录其 schema、行数、哈希和预期结果。
