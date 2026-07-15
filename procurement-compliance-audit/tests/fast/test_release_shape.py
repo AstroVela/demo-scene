@@ -34,6 +34,24 @@ def test_release_shape_is_deliberately_small():
     assert OUTPUT_FILENAMES == {"audit_findings.jsonl", "audit_summary.jsonl"}
 
 
+def test_runtime_source_contract_uses_postgres_and_minio_not_local_paths():
+    runtime = (PROJECT_ROOT / "runtime.yml").read_text(encoding="utf-8")
+    source_files = [
+        PROJECT_ROOT / "src/procurement_audit_sql_demo/pipeline.py",
+        PROJECT_ROOT / "src/procurement_audit_sql_demo/ai.py",
+        PROJECT_ROOT / "src/procurement_audit_sql_demo/vane_functions.py",
+        PROJECT_ROOT / "src/procurement_audit_sql_demo/sql/staging/stg_evidence_images.sql",
+        PROJECT_ROOT / "src/procurement_audit_sql_demo/sql/intermediate/int_evidence_ocr.sql",
+    ]
+
+    assert "postgres:" in runtime
+    assert "minio:" in runtime
+    assert "fixture_dir" not in runtime
+    for path in source_files:
+        text = path.read_text(encoding="utf-8")
+        assert "local_path" not in text, f"{path.name} still uses a local source path"
+
+
 def test_queries_are_read_only_and_cover_all_eight_relations():
     queries = (PROJECT_ROOT / "queries.sql").read_text(encoding="utf-8")
 
@@ -77,6 +95,19 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
     assert "/v1/chat/completions" in qwen_guide
     assert "vane-ai==0.1.0.dev20260714234347" in project["dependencies"]
     assert "openai==2.45.0" in project["dependencies"]
+    assert any(item.startswith("minio") for item in project["dependencies"])
+    assert any(item.startswith("psycopg") for item in project["dependencies"])
+    for runbook in runbooks.values():
+        for required in (
+            "python scripts/run_demo.py fixture",
+            "python scripts/run_demo.py run",
+            "python scripts/run_demo.py e2e",
+            "127.0.0.1:5432",
+            "127.0.0.1:9000",
+            "PostgreSQL",
+            "MinIO",
+        ):
+            assert required in runbook
     assert "@vane.cls" in readme
     assert "@vane.func" in readme
     assert "vane.ai.prompt" in readme

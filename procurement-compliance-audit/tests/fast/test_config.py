@@ -11,8 +11,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VALID_YAML = """\
 version: 1
 runner: local
-fixture_dir: fixtures/expert-score-anomaly
 output_dir: output
+postgres:
+  dsn: postgresql://vane_insight:password@127.0.0.1:5432/vane_insight
+  raw_schema: procurement_audit_raw
+  project_table: projects
+  supplier_table: suppliers
+  score_table: expert_scores
+  evidence_table: evidence_files
+minio:
+  endpoint: 127.0.0.1:9000
+  access_key: vaneinsight
+  secret_key: password
+  secure: false
+  bucket: procurement-compliance-audit-fixtures
 ocr:
   engine: rapidocr
   device: cpu
@@ -34,8 +46,15 @@ def test_checked_in_config_selects_real_qwen_and_local_runner():
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
 
     assert config.runner == "local"
-    assert config.fixture_dir == PROJECT_ROOT / "fixtures/expert-score-anomaly"
     assert config.output_dir == PROJECT_ROOT / "output"
+    assert config.postgres.raw_relation_names == (
+        "procurement_audit_raw.projects",
+        "procurement_audit_raw.suppliers",
+        "procurement_audit_raw.expert_scores",
+        "procurement_audit_raw.evidence_files",
+    )
+    assert config.minio.endpoint == "127.0.0.1:9000"
+    assert config.minio.bucket == "procurement-compliance-audit-fixtures"
     assert config.ai.provider == "openai"
     assert config.ai.model == "Qwen2.5-VL-3B-Instruct"
     assert config.ai.base_url == "http://127.0.0.1:8001/v1"
@@ -54,6 +73,17 @@ def test_config_rejects_non_loopback_ai_endpoint(tmp_path):
     )
 
     with pytest.raises(ConfigError, match="loopback HTTP URL"):
+        load_runtime_config(path)
+
+
+def test_config_rejects_invalid_postgres_identifier(tmp_path):
+    path = tmp_path / "runtime.yml"
+    path.write_text(
+        VALID_YAML.replace("raw_schema: procurement_audit_raw", "raw_schema: bad-name"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="SQL identifier"):
         load_runtime_config(path)
 
 

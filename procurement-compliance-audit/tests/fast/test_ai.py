@@ -11,7 +11,7 @@ from procurement_audit_sql_demo.ai import (
     build_evidence_ai_requests,
 )
 from procurement_audit_sql_demo.config import load_runtime_config
-from procurement_audit_sql_demo.fixture_loader import load_fixture
+from procurement_audit_sql_demo.fixture_loader import build_fixture
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +21,8 @@ OCR_ROWS = [
         "project_id": "PRJ-2026-001",
         "file_id": "EVD-REC-001",
         "role": "expert_recommendation",
-        "local_path": str(FIXTURE_DIR / "expert_recommendation.png"),
+        "bucket": "procurement-compliance-audit-fixtures",
+        "object_key": "procurement/PRJ-2026-001/evidence/expert_recommendation.png",
         "ocr_status": "success",
         "ocr_text": "专家编号 EXP-001\n推荐供应商 景维自动化有限公司",
         "ocr_confidence": 0.96,
@@ -30,7 +31,8 @@ OCR_ROWS = [
         "project_id": "PRJ-2026-001",
         "file_id": "EVD-MIN-001",
         "role": "committee_minutes",
-        "local_path": str(FIXTURE_DIR / "committee_minutes.png"),
+        "bucket": "procurement-compliance-audit-fixtures",
+        "object_key": "procurement/PRJ-2026-001/evidence/committee_minutes.png",
         "ocr_status": "success",
         "ocr_text": "专家编号 EXP-001\n参加评审 是\n是否回避 否",
         "ocr_confidence": 0.94,
@@ -56,10 +58,30 @@ class FakeSession:
         return FakeRelation(table)
 
 
-def test_build_requests_binds_images_and_marks_ocr_as_untrusted():
-    fixture = load_fixture(FIXTURE_DIR)
+class FakeStore:
+    def __init__(self):
+        fixture = build_fixture(FIXTURE_DIR)
+        self.objects = {
+            (item.bucket, item.object_key): item.value for item in fixture.objects
+        }
 
-    requests = build_evidence_ai_requests(OCR_ROWS, fixture, minimum_confidence=0.60)
+    def get_bytes(self, bucket, object_key):
+        return self.objects[(bucket, object_key)]
+
+
+def _source():
+    return build_fixture(FIXTURE_DIR).source
+
+
+def test_build_requests_binds_images_and_marks_ocr_as_untrusted():
+    source = _source()
+
+    requests = build_evidence_ai_requests(
+        OCR_ROWS,
+        source,
+        FakeStore(),
+        minimum_confidence=0.60,
+    )
 
     assert [request.file_id for request in requests] == ["EVD-REC-001", "EVD-MIN-001"]
     assert all(request.image_bytes.startswith(b"\x89PNG") for request in requests)
@@ -72,10 +94,15 @@ def test_build_requests_binds_images_and_marks_ocr_as_untrusted():
 
 
 def test_low_quality_ocr_never_becomes_an_ai_request():
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     rows = [{**OCR_ROWS[0], "ocr_confidence": 0.20}]
 
-    requests = build_evidence_ai_requests(rows, fixture, minimum_confidence=0.60)
+    requests = build_evidence_ai_requests(
+        rows,
+        source,
+        FakeStore(),
+        minimum_confidence=0.60,
+    )
 
     assert requests == []
 
@@ -91,7 +118,7 @@ def test_relation_requires_ai_request_coverage_for_every_fixture_image(
     ocr_rows,
     missing_file_id,
 ):
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
     health_calls = []
@@ -100,19 +127,20 @@ def test_relation_requires_ai_request_coverage_for_every_fixture_image(
         build_evidence_ai_relation(
             ocr_rows,
             session,
-            fixture,
+            source,
             config,
             prompt_function=lambda *_args, **_kwargs: pytest.fail(
                 "model must not run with incomplete request coverage"
             ),
             health_probe=lambda _config: health_calls.append(True),
+            object_store=FakeStore(),
         )
 
     assert health_calls == []
 
 
 def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
     prompt_calls = []
@@ -137,10 +165,11 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
-        fixture,
+        source,
         config,
         prompt_function=fake_prompt,
         health_probe=lambda _config: None,
+        object_store=FakeStore(),
     )
 
     assert len(prompt_calls) == 2
@@ -165,7 +194,7 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
 
 
 def test_invalid_model_contract_is_retried_once_with_same_image():
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
     invalid = (
@@ -195,10 +224,11 @@ def test_invalid_model_contract_is_retried_once_with_same_image():
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
-        fixture,
+        source,
         config,
         prompt_function=fake_prompt,
         health_probe=lambda _config: None,
+        object_store=FakeStore(),
     )
 
     assert len(calls) == 3
@@ -208,7 +238,7 @@ def test_invalid_model_contract_is_retried_once_with_same_image():
 
 
 def test_response_document_type_must_match_trusted_evidence_role():
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
     wrong_role = (
@@ -239,10 +269,11 @@ def test_response_document_type_must_match_trusted_evidence_role():
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
-        fixture,
+        source,
         config,
         prompt_function=fake_prompt,
         health_probe=lambda _config: None,
+        object_store=FakeStore(),
     )
 
     assert len(calls) == 3
@@ -252,7 +283,7 @@ def test_response_document_type_must_match_trusted_evidence_role():
 
 
 def test_two_invalid_model_contracts_fail_with_file_context():
-    fixture = load_fixture(FIXTURE_DIR)
+    source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
 
@@ -271,10 +302,11 @@ def test_two_invalid_model_contracts_fail_with_file_context():
         build_evidence_ai_relation(
             OCR_ROWS,
             session,
-            fixture,
+            source,
             config,
             prompt_function=fake_prompt,
             health_probe=lambda _config: None,
+            object_store=FakeStore(),
         )
 
 

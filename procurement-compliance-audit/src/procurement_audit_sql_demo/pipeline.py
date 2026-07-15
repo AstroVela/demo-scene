@@ -14,8 +14,10 @@ import vane
 
 from .ai import build_evidence_ai_relation
 from .config import RuntimeConfig
-from .fixture_loader import FixtureBundle, load_fixture
+from .minio_store import MinioStore
 from .output_writer import PublishedOutputs, write_outputs
+from .pg import connect_postgres, probe_postgres, read_source_rows
+from .source_data import SourceBundle, source_bundle_from_rows
 from .vane_functions import EvidenceOcrActor, validate_audit_fact_json_udf
 from .verify_outputs import verify_fixture_outputs
 
@@ -43,6 +45,10 @@ CORE_RELATIONS = (
     "audit_summary",
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class RuntimeConnectionError(ConnectionError):
+    """Raised when PostgreSQL or MinIO cannot be reached."""
 
 
 @dataclass(frozen=True)
@@ -105,7 +111,31 @@ def _relation_rows(
     return [dict(zip(columns, row)) for row in relation.fetchall()]
 
 
-def attach_runtime_functions(connection: Any, fixture: FixtureBundle) -> None:
+def read_source_bundle(config: RuntimeConfig) -> SourceBundle:
+    """Read and validate the complete PostgreSQL source snapshot."""
+
+    with connect_postgres(config.postgres) as postgres:
+        rows = read_source_rows(postgres, config.postgres)
+    return source_bundle_from_rows(*rows, expected_bucket=config.minio.bucket)
+
+
+def probe_runtime(config: RuntimeConfig) -> None:
+    """Report every unavailable source service without printing credentials."""
+
+    failures: list[str] = []
+    try:
+        probe_postgres(config.postgres)
+    except Exception as exc:
+        failures.append(f"PostgreSQL ({config.postgres.raw_schema}): {exc}")
+    try:
+        MinioStore(config.minio).probe()
+    except Exception as exc:
+        failures.append(f"MinIO ({config.minio.endpoint}): {exc}")
+    if failures:
+        raise RuntimeConnectionError("; ".join(failures))
+
+
+def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
     """Attach the release-facing stateless and stateful SQL functions."""
 
     vane.attach_function(
@@ -116,40 +146,42 @@ def attach_runtime_functions(connection: Any, fixture: FixtureBundle) -> None:
         replace=True,
     )
     vane.attach_function(
-        EvidenceOcrActor(allowed_root=fixture.source_dir),
+        EvidenceOcrActor(config.minio),
         connection=connection,
         alias="evidence_ocr_json",
-        parameters=["VARCHAR"],
+        parameters=["VARCHAR", "VARCHAR"],
         replace=True,
     )
 
 
-def _register_inputs(connection: Any, fixture: FixtureBundle) -> None:
-    register_or_replace_table(connection, "input_project", fixture.project)
-    register_or_replace_table(connection, "input_suppliers", fixture.suppliers)
-    register_or_replace_table(connection, "input_scores", fixture.scores)
-    register_or_replace_table(connection, "input_evidence", fixture.evidence)
+def _register_inputs(connection: Any, source: SourceBundle) -> None:
+    register_or_replace_table(connection, "input_project", source.project)
+    register_or_replace_table(connection, "input_suppliers", source.suppliers)
+    register_or_replace_table(connection, "input_scores", source.scores)
+    register_or_replace_table(connection, "input_evidence", source.evidence)
 
 
 def run_pipeline(
     config: RuntimeConfig,
     *,
     configure_runner: Callable[..., Any] = vane.configure,
-    runtime_function_attacher: Callable[[Any, FixtureBundle], None] = attach_runtime_functions,
+    runtime_probe: Callable[[RuntimeConfig], None] = probe_runtime,
+    runtime_function_attacher: Callable[[Any, RuntimeConfig], None] = attach_runtime_functions,
     ai_relation_builder: Callable[..., Any] = build_evidence_ai_relation,
     connection_factory: Callable[[], Any] = duckdb.connect,
-    fixture_loader: Callable[[Path], FixtureBundle] = load_fixture,
+    source_loader: Callable[[RuntimeConfig], SourceBundle] = read_source_bundle,
     output_publisher: Callable[..., PublishedOutputs] = write_outputs,
 ) -> PipelineResult:
     """Execute all eight core relations, verify the fixture, and publish JSONL."""
 
     configure_runner(runner=config.runner)
-    fixture = fixture_loader(config.fixture_dir)
+    runtime_probe(config)
+    source = source_loader(config)
     executed: list[str] = []
     connection = connection_factory()
     try:
-        _register_inputs(connection, fixture)
-        runtime_function_attacher(connection, fixture)
+        _register_inputs(connection, source)
+        runtime_function_attacher(connection, config)
         for relation_name, sql_path in PRE_AI_STAGES:
             _execute_sql_file(connection, sql_path)
             executed.append(relation_name)
@@ -162,7 +194,7 @@ def run_pipeline(
         ai_relation = ai_relation_builder(
             ocr_rows,
             connection,
-            fixture,
+            source,
             config,
         )
         register_or_replace_table(
@@ -181,7 +213,7 @@ def run_pipeline(
         connection.close()
 
     verify_fixture_outputs(findings, summaries)
-    evidence_ids = frozenset(row["file_id"] for row in fixture.evidence.to_pylist())
+    evidence_ids = frozenset(row["file_id"] for row in source.evidence.to_pylist())
     published = output_publisher(
         findings,
         summaries,

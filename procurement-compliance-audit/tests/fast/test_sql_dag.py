@@ -7,7 +7,7 @@ import re
 import duckdb
 import pyarrow as pa
 
-from procurement_audit_sql_demo.fixture_loader import load_fixture
+from procurement_audit_sql_demo.fixture_loader import build_fixture
 from procurement_audit_sql_demo.vane_functions import (
     stable_json,
     validate_audit_fact_json,
@@ -103,7 +103,7 @@ def _run_dag(
     *,
     swap_document_roles: bool = False,
 ):
-    fixture = load_fixture(FIXTURE_DIR)
+    fixture = build_fixture(FIXTURE_DIR)
     connection = duckdb.connect()
     _register_table(connection, "input_project", fixture.project)
     _register_table(connection, "input_suppliers", fixture.suppliers)
@@ -111,7 +111,7 @@ def _run_dag(
     _register_table(connection, "input_evidence", fixture.evidence)
     connection.create_function(
         "evidence_ocr_json",
-        lambda _path: stable_json(
+        lambda _bucket, _object_key: stable_json(
             {
                 "status": "success",
                 "full_text": "fixture OCR text",
@@ -120,7 +120,7 @@ def _run_dag(
                 "error": None,
             }
         ),
-        ["VARCHAR"],
+        ["VARCHAR", "VARCHAR"],
         "VARCHAR",
     )
     connection.create_function(

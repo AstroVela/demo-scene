@@ -23,13 +23,13 @@
     {
       "file_id": "EVD-REC-001",
       "role": "expert_recommendation",
-      "local_path": "expert_recommendation.png",
+      "object_key": "procurement/PRJ-2026-001/evidence/expert_recommendation.png",
       "media_type": "image/png"
     },
     {
       "file_id": "EVD-MIN-001",
       "role": "committee_minutes",
-      "local_path": "committee_minutes.png",
+      "object_key": "procurement/PRJ-2026-001/evidence/committee_minutes.png",
       "media_type": "image/png"
     }
   ],

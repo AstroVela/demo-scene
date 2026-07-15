@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import math
 import io
-from pathlib import Path
 import re
 from typing import Any, Mapping
 
 from PIL import Image, UnidentifiedImageError
 import vane
+
+from .config import MinioConfig
+from .minio_store import MinioStore
 
 
 AI_FACT_FIELDS = frozenset(
@@ -308,24 +310,23 @@ def normalize_ocr_observations(observations: Any) -> str:
     gpus=0,
 )
 class EvidenceOcrActor:
-    """Stateful image OCR function that initializes one reusable engine."""
+    """Stateful MinIO image OCR function that initializes one reusable engine."""
 
-    def __init__(self, allowed_root: Path | str | None = None, engine_factory=None) -> None:
-        self.allowed_root = Path(allowed_root).resolve() if allowed_root is not None else None
+    def __init__(
+        self,
+        minio_config: MinioConfig,
+        engine_factory=None,
+        store_factory=MinioStore,
+    ) -> None:
+        self.store = store_factory(minio_config)
         self.engine = (engine_factory or build_rapidocr)()
 
-    def __call__(self, local_path: str) -> str:
+    def __call__(self, bucket: str, object_key: str) -> str:
         try:
-            path = Path(local_path).resolve()
-        except (TypeError, ValueError, OSError):
-            return _unreadable_ocr("invalid_image_path")
-        if self.allowed_root is not None:
-            try:
-                path.relative_to(self.allowed_root)
-            except ValueError:
-                return _unreadable_ocr("path_outside_fixture")
+            value = self.store.get_bytes(bucket, object_key)
+        except Exception as exc:
+            return _unreadable_ocr(f"object_read_failed:{type(exc).__name__}")
         try:
-            value = path.read_bytes()
             with Image.open(io.BytesIO(value)) as image:
                 image.verify()
         except (OSError, UnidentifiedImageError, SyntaxError, ValueError):

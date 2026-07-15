@@ -24,7 +24,7 @@ Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片
 [打开 PNG](docs/vane-procurement-audit-data-flow.png) · [编辑 Excalidraw 源文件](docs/vane-procurement-audit-data-flow.excalidraw)
 
 ```text
-project.json + expert_scores.csv + 2 张 PNG 图片
+PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
   -> 类型明确的评分和证据 Relation
   -> 有状态 RapidOCR
   -> Qwen 多模态事实提取
@@ -37,10 +37,10 @@ project.json + expert_scores.csv + 2 张 PNG 图片
 
 | 输入 | Grain | 用途 |
 | --- | --- | --- |
-| `project.json` | 一个采购项目 | 供应商、证据 locator、原 winner 和规则阈值 |
-| `expert_scores.csv` | expert × supplier，共 12 行 | 4 位专家对 3 家供应商的评分 |
-| `expert_recommendation.png` | 一份图片证据 | `EXP-001` 在招标前推荐景维自动化 |
-| `committee_minutes.png` | 一份图片证据 | `EXP-001` 参加评审且没有回避 |
+| PostgreSQL `projects` / `suppliers` | 一个项目 / project × supplier | 项目、供应商、原 winner 和规则阈值 |
+| PostgreSQL `expert_scores` | expert × supplier，共 12 行 | 4 位专家对 3 家供应商的评分 |
+| PostgreSQL `evidence_files` | 一份证据一行 | 可信 role 与 MinIO `bucket/object_key` locator |
+| MinIO 2 个 PNG 对象 | 一份图片证据一个对象 | 推荐记录与评审会议纪要的原始材料字节 |
 
 核心 Relation 如下：
 
@@ -58,13 +58,13 @@ stg_scores / stg_evidence_images
 
 ## 运行 Demo
 
-Demo 需要已验证的 Python/Vane 环境和本地 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备环境，然后执行：
+Demo 需要已验证的 Python/Vane 环境，以及正在运行的 PostgreSQL、MinIO 和本地 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备环境，然后执行：
 
 ```bash
-python scripts/run_demo.py
+python scripts/run_demo.py e2e
 ```
 
-命令会执行真实 OCR 和 Qwen 推理，没有 AI mock fallback。运行后生成：
+`e2e` 先把仓库中的合成 seed 数据写入 PostgreSQL/MinIO，再让 pipeline 只从这两个服务读取输入，并执行真实 OCR 和 Qwen 推理。没有 AI mock fallback。运行后生成：
 
 ```text
 output/audit_findings.jsonl  # 3 行
@@ -92,8 +92,8 @@ output/audit_summary.jsonl   # 1 行
 
 ## 适配到你的环境
 
-- 将 Fixture Arrow 表替换为 PostgreSQL、SRM 或其他数据库快照。
-- 在相同图片字节合同后，将本地路径替换为 MinIO/S3 locator。
+- 将四张 PostgreSQL 原始表替换为自己的采购业务快照，并保持 Relation grain。
+- 在 `evidence_files` 中写入自己的 MinIO/S3-compatible `bucket/object_key` locator。
 - 替换 RapidOCR，同时保持 OCR JSON 边界不变。
 - 在 `runtime.yml` 中接入返回相同 Schema 的 OpenAI-compatible 多模态模型。
 - 为新审计规则增加显式、可测试的 SQL 分支，不要让模型直接输出风险结论。

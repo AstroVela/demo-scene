@@ -175,7 +175,7 @@ PY
 三项检查全部通过后，回到项目根目录执行：
 
 ```bash
-python scripts/run_demo.py
+python scripts/run_demo.py e2e
 ```
 
 ## 7. 停止和再次启动

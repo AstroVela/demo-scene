@@ -47,6 +47,7 @@ def test_cli_prints_business_result_and_vane_capabilities(monkeypatch, capsys, t
     assert "EXP-001" in output
     assert "SUP-JW-001 -> SUP-ZJ-002" in output
     assert "3 findings" in output
+    assert "PostgreSQL business rows + MinIO evidence objects" in output
     assert "[stateful UDF]" in output
     assert "[AI Function]" in output
     assert "[stateless UDF]" in output
@@ -63,3 +64,16 @@ def test_cli_returns_nonzero_without_hiding_failure(monkeypatch, capsys, tmp_pat
 
     assert cli.main(["--config", str(tmp_path / "runtime.yml")]) == 1
     assert "Qwen unavailable" in capsys.readouterr().err
+
+
+def test_cli_e2e_seeds_external_sources_before_running(monkeypatch):
+    events = []
+
+    monkeypatch.setattr(
+        cli,
+        "_run_command",
+        lambda command, arguments: events.append((command, arguments)) or 0,
+    )
+
+    assert cli.main(["e2e"]) == 0
+    assert events == [("fixture", []), ("run", [])]

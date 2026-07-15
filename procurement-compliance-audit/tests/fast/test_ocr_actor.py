@@ -1,18 +1,30 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import io
 
 from PIL import Image
 
 from procurement_audit_sql_demo.vane_functions import EvidenceOcrActor
 
 
-def _make_png(path):
-    Image.new("RGB", (80, 40), "white").save(path, format="PNG")
-    return path
+def _png_bytes():
+    buffer = io.BytesIO()
+    Image.new("RGB", (80, 40), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
-def test_ocr_actor_reuses_one_engine_for_multiple_images(tmp_path):
+class FakeStore:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_bytes(self, bucket, object_key):
+        return self.objects[(bucket, object_key)]
+
+
+def test_ocr_actor_reuses_one_engine_for_multiple_minio_objects():
     calls = {"factory": 0, "engine": 0}
 
     def factory():
@@ -27,9 +39,19 @@ def test_ocr_actor_reuses_one_engine_for_multiple_images(tmp_path):
 
         return engine
 
-    actor = EvidenceOcrActor(engine_factory=factory)
-    first = json.loads(actor(str(_make_png(tmp_path / "one.png"))))
-    second = json.loads(actor(str(_make_png(tmp_path / "two.png"))))
+    store = FakeStore(
+        {
+            ("evidence", "one.png"): _png_bytes(),
+            ("evidence", "two.png"): _png_bytes(),
+        }
+    )
+    actor = EvidenceOcrActor(
+        SimpleNamespace(),
+        engine_factory=factory,
+        store_factory=lambda _config: store,
+    )
+    first = json.loads(actor("evidence", "one.png"))
+    second = json.loads(actor("evidence", "two.png"))
 
     assert calls == {"factory": 1, "engine": 2}
     assert first == second == {
@@ -41,12 +63,14 @@ def test_ocr_actor_reuses_one_engine_for_multiple_images(tmp_path):
     }
 
 
-def test_ocr_actor_returns_stable_unreadable_contract(tmp_path):
-    invalid = tmp_path / "invalid.png"
-    invalid.write_bytes(b"not an image")
-    actor = EvidenceOcrActor(engine_factory=lambda: lambda _value: [])
+def test_ocr_actor_returns_stable_unreadable_contract():
+    actor = EvidenceOcrActor(
+        SimpleNamespace(),
+        engine_factory=lambda: lambda _value: [],
+        store_factory=lambda _config: FakeStore({("evidence", "invalid.png"): b"not an image"}),
+    )
 
-    result = json.loads(actor(str(invalid)))
+    result = json.loads(actor("evidence", "invalid.png"))
 
     assert result["status"] == "unreadable"
     assert result["full_text"] == ""
@@ -55,16 +79,14 @@ def test_ocr_actor_returns_stable_unreadable_contract(tmp_path):
     assert result["error"] == "image_decode_failed"
 
 
-def test_ocr_actor_rejects_path_outside_its_allowed_root(tmp_path):
-    allowed = tmp_path / "fixture"
-    allowed.mkdir()
-    outside = _make_png(tmp_path / "outside.png")
+def test_ocr_actor_reports_missing_minio_object():
     actor = EvidenceOcrActor(
-        allowed_root=allowed,
+        SimpleNamespace(),
         engine_factory=lambda: lambda _value: [],
+        store_factory=lambda _config: FakeStore({}),
     )
 
-    result = json.loads(actor(str(outside)))
+    result = json.loads(actor("evidence", "missing.png"))
 
     assert result["status"] == "unreadable"
-    assert result["error"] == "path_outside_fixture"
+    assert result["error"] == "object_read_failed:KeyError"

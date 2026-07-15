@@ -24,7 +24,7 @@ Vane is a multi-compute engine for multimodal data: it lets score tables, docume
 [Open the PNG](docs/vane-procurement-audit-data-flow.en.png) · [Edit the Excalidraw source](docs/vane-procurement-audit-data-flow.en.excalidraw)
 
 ```text
-project.json + expert_scores.csv + 2 PNG images
+PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
   -> typed score and evidence relations
   -> stateful RapidOCR
   -> Qwen multimodal fact extraction
@@ -37,10 +37,10 @@ project.json + expert_scores.csv + 2 PNG images
 
 | Input | Grain | Purpose |
 | --- | --- | --- |
-| `project.json` | one procurement project | Suppliers, evidence locators, original winner, and thresholds |
-| `expert_scores.csv` | expert × supplier, 12 rows | Scores from four experts for three suppliers |
-| `expert_recommendation.png` | one image artifact | Evidence that `EXP-001` recommended Jingwei before the tender |
-| `committee_minutes.png` | one image artifact | Evidence that `EXP-001` participated and did not recuse |
+| PostgreSQL `projects` / `suppliers` | one project / project × supplier | Project, suppliers, original winner, and thresholds |
+| PostgreSQL `expert_scores` | expert × supplier, 12 rows | Scores from four experts for three suppliers |
+| PostgreSQL `evidence_files` | one row per artifact | Trusted role and MinIO `bucket/object_key` locator |
+| Two MinIO PNG objects | one object per image artifact | Original recommendation and committee-minute bytes |
 
 The core relations are:
 
@@ -58,13 +58,13 @@ All names, companies, and documents are synthetic. The fixture is constructed so
 
 ## Run the demo
 
-The demo requires the verified Python/Vane environment and a local Qwen service. Follow the [complete runbook](docs/runbook.md), then run:
+The demo requires the verified Python/Vane environment plus running PostgreSQL, MinIO, and local Qwen services. Follow the [complete runbook](docs/runbook.md), then run:
 
 ```bash
-python scripts/run_demo.py
+python scripts/run_demo.py e2e
 ```
 
-The command performs real OCR and Qwen inference; there is no AI mock fallback. It produces:
+`e2e` seeds synthetic data into PostgreSQL/MinIO, then runs a pipeline whose inputs come only from those services. It performs real OCR and Qwen inference; there is no AI mock fallback. It produces:
 
 ```text
 output/audit_findings.jsonl  # 3 rows
@@ -92,8 +92,8 @@ Both images must pass OCR and reach Qwen. Invalid response contracts fail the ru
 
 ## Adapt it to your environment
 
-- Replace fixture Arrow tables with PostgreSQL, SRM, or another database snapshot.
-- Replace local paths with MinIO/S3 locators behind the same image-byte contract.
+- Replace the four PostgreSQL raw tables with your procurement snapshot while preserving relation grain.
+- Put your own MinIO/S3-compatible `bucket/object_key` locators in `evidence_files`.
 - Replace RapidOCR while preserving the OCR JSON boundary.
 - Point `runtime.yml` at another OpenAI-compatible multimodal model with the same response schema.
 - Add explicit, testable SQL branches for new audit rules; keep risk conclusions out of the model.

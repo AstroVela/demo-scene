@@ -7,13 +7,30 @@ from pathlib import Path
 import pyarrow as pa
 import pytest
 
-from procurement_audit_sql_demo.ai import EvidenceAiInputError
+from procurement_audit_sql_demo import pipeline
+from procurement_audit_sql_demo.ai import EvidenceAiInputError, build_evidence_ai_relation
 from procurement_audit_sql_demo.config import load_runtime_config
+from procurement_audit_sql_demo.fixture_loader import build_fixture
 from procurement_audit_sql_demo.pipeline import CORE_RELATIONS, run_pipeline
 from procurement_audit_sql_demo.vane_functions import stable_json, validate_audit_fact_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FIXTURE_DIR = PROJECT_ROOT / "fixtures/expert-score-anomaly"
+
+
+def _source_and_store():
+    fixture = build_fixture(FIXTURE_DIR)
+
+    class Store:
+        objects = {
+            (item.bucket, item.object_key): item.value for item in fixture.objects
+        }
+
+        def get_bytes(self, bucket, object_key):
+            return self.objects[(bucket, object_key)]
+
+    return fixture.source, Store()
 
 
 def _fixed_ai_table() -> pa.Table:
@@ -55,21 +72,59 @@ def _fixed_ai_table() -> pa.Table:
     )
 
 
+def test_source_loader_reads_postgres_snapshot(monkeypatch):
+    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    expected, _store = _source_and_store()
+    events = []
+
+    class Connection:
+        def __enter__(self):
+            events.append("postgres:enter")
+            return self
+
+        def __exit__(self, *_args):
+            events.append("postgres:exit")
+            return False
+
+    monkeypatch.setattr(
+        pipeline,
+        "connect_postgres",
+        lambda pg_config: events.append(pg_config.raw_schema) or Connection(),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "read_source_rows",
+        lambda _connection, _config: (
+            expected.project.to_pylist(),
+            expected.suppliers.to_pylist(),
+            expected.scores.to_pylist(),
+            expected.evidence.to_pylist(),
+        ),
+    )
+
+    actual = pipeline.read_source_bundle(config)
+
+    assert actual.project.to_pylist() == expected.project.to_pylist()
+    assert actual.evidence.to_pylist() == expected.evidence.to_pylist()
+    assert events == ["procurement_audit_raw", "postgres:enter", "postgres:exit"]
+
+
 def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path):
     config = replace(
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
         output_dir=tmp_path / "output",
     )
     events = []
+    source, _store = _source_and_store()
 
     def configure_runner(*, runner):
         events.append(f"configure:{runner}")
 
-    def attach_functions(connection, fixture):
+    def attach_functions(connection, _config):
         events.append("attach_functions")
         connection.create_function(
             "evidence_ocr_json",
-            lambda _path: stable_json(
+            lambda _bucket, _object_key: stable_json(
                 {
                     "status": "success",
                     "full_text": "fixture OCR text",
@@ -78,7 +133,7 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path)
                     "error": None,
                 }
             ),
-            ["VARCHAR"],
+            ["VARCHAR", "VARCHAR"],
             "VARCHAR",
         )
         connection.create_function(
@@ -88,7 +143,7 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path)
             "VARCHAR",
         )
 
-    def build_ai(ocr_rows, connection, fixture, runtime_config):
+    def build_ai(ocr_rows, connection, source_bundle, runtime_config):
         events.append(f"ai:{len(ocr_rows)}")
         assert runtime_config is config
         assert {row["file_id"] for row in ocr_rows} == {"EVD-REC-001", "EVD-MIN-001"}
@@ -97,8 +152,10 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path)
     result = run_pipeline(
         config,
         configure_runner=configure_runner,
+        runtime_probe=lambda _config: None,
         runtime_function_attacher=attach_functions,
         ai_relation_builder=build_ai,
+        source_loader=lambda _config: source,
     )
 
     assert events == ["configure:local", "attach_functions", "ai:2"]
@@ -121,10 +178,11 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(tmp_path):
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
         output_dir=tmp_path / "output",
     )
+    source, store = _source_and_store()
 
-    def attach_functions(connection, _fixture):
-        def evidence_ocr(path):
-            if path.endswith("expert_recommendation.png"):
+    def attach_functions(connection, _config):
+        def evidence_ocr(_bucket, object_key):
+            if object_key.endswith("expert_recommendation.png"):
                 return stable_json(
                     {
                         "status": "success",
@@ -147,7 +205,7 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(tmp_path):
         connection.create_function(
             "evidence_ocr_json",
             evidence_ocr,
-            ["VARCHAR"],
+            ["VARCHAR", "VARCHAR"],
             "VARCHAR",
         )
         connection.create_function(
@@ -157,11 +215,23 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(tmp_path):
             "VARCHAR",
         )
 
+    def build_ai(ocr_rows, connection, source_bundle, runtime_config):
+        return build_evidence_ai_relation(
+            ocr_rows,
+            connection,
+            source_bundle,
+            runtime_config,
+            object_store=store,
+        )
+
     with pytest.raises(EvidenceAiInputError, match="EVD-MIN-001"):
         run_pipeline(
             config,
             configure_runner=lambda **_kwargs: None,
+            runtime_probe=lambda _config: None,
             runtime_function_attacher=attach_functions,
+            ai_relation_builder=build_ai,
+            source_loader=lambda _config: source,
         )
 
     assert not config.output_dir.exists()

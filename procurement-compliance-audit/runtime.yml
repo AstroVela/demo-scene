@@ -1,7 +1,21 @@
 version: 1
 runner: local
-fixture_dir: fixtures/expert-score-anomaly
 output_dir: output
+
+postgres:
+  dsn: postgresql://vane_insight:vane_insight_dev_password@127.0.0.1:5432/vane_insight
+  raw_schema: procurement_audit_raw
+  project_table: projects
+  supplier_table: suppliers
+  score_table: expert_scores
+  evidence_table: evidence_files
+
+minio:
+  endpoint: 127.0.0.1:9000
+  access_key: vaneinsight
+  secret_key: vaneinsight_dev_password
+  secure: false
+  bucket: procurement-compliance-audit-fixtures
 
 ocr:
   engine: rapidocr

@@ -11,6 +11,8 @@ This runbook contains the exact environment, installation, model-service, config
 | Operating system | Ubuntu 24.04 x86_64, glibc 2.39 |
 | Python | CPython 3.12 |
 | Vane | `vane-ai==0.1.0.dev20260714234347` |
+| PostgreSQL | `127.0.0.1:5432`, database `vane_insight` |
+| MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
 The TestPyPI Vane wheel targets CPython 3.12, Linux x86_64, and `manylinux_2_39`. Support for older glibc versions, other Python minor versions, or other CPU architectures is not guaranteed.
@@ -58,6 +60,8 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 | --- | --- |
 | `vane-ai==0.1.0.dev20260714234347` | Vane APIs, custom DuckDB, and workers |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
+| `psycopg` | Read and initialize PostgreSQL raw tables |
+| `minio` | Read and initialize raw material objects in MinIO |
 | `rapidocr`, `onnxruntime` | Stateful CPU OCR actor |
 | `pillow` | Image reads |
 | `pyarrow` | Relation/Python data boundary |
@@ -65,6 +69,25 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 | `pytest` | Fast tests |
 
 `pip check` must report no broken requirements.
+
+## Prepare PostgreSQL and MinIO
+
+The checked-in `runtime.yml` uses these loopback contracts by default:
+
+| Service | Default contract |
+| --- | --- |
+| PostgreSQL | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
+| MinIO | access/secret `vaneinsight` / `vaneinsight_dev_password`, `127.0.0.1:9000`, HTTP |
+
+You may reuse existing services or install them from their official documentation. The `fixture` command creates the four raw tables and MinIO bucket and refreshes synthetic data; it does not create the servers, PostgreSQL database/role, MinIO process, or access key.
+
+After configuring the services, initialize the sources independently with:
+
+```bash
+python scripts/run_demo.py fixture
+```
+
+The runtime pipeline never reads `fixtures/`; that directory is only a reproducible synthetic seed for the `fixture` command.
 
 ## Prepare the local Qwen service
 
@@ -83,10 +106,22 @@ Expected: health is HTTP 200 and the model list contains `Qwen2.5-VL-3B-Instruct
 
 ## Run and verify
 
-Run the real pipeline:
+The launcher exposes three commands:
 
 ```bash
-python scripts/run_demo.py
+python scripts/run_demo.py fixture
+python scripts/run_demo.py run
+python scripts/run_demo.py e2e
+```
+
+- `fixture` writes one project, three suppliers, twelve scores, and two evidence locators to PostgreSQL, plus two PNG objects to MinIO.
+- `run` probes PostgreSQL/MinIO, reads every input from those services, and executes real OCR, Qwen, and the SQL DAG.
+- `e2e` runs `fixture -> run` in order.
+
+For a first run:
+
+```bash
+python scripts/run_demo.py e2e
 ```
 
 Expected terminal output:
@@ -111,13 +146,13 @@ Run deterministic tests without starting Qwen:
 python -m pytest tests/fast -q
 ```
 
-## Fixture contract
+## Synthetic seed and source contract
 
-`fixtures/expert-score-anomaly/` contains exactly four business inputs:
+`fixtures/expert-score-anomaly/` contains exactly four synthetic seed files, read only by the `fixture` command:
 
 | File | Grain | Purpose |
 | --- | --- | --- |
-| `project.json` | one procurement project | Suppliers, image locators, original winner, and rule thresholds |
+| `project.json` | one procurement project | Suppliers, MinIO object keys, original winner, and rule thresholds |
 | `expert_scores.csv` | expert × supplier, 12 rows | Scores from four experts for three suppliers |
 | `expert_recommendation.png` | one image | `EXP-001` recommends Jingwei before the tender |
 | `committee_minutes.png` | one image | `EXP-001` participates and is marked as not recused |
@@ -127,6 +162,8 @@ All names, companies, and documents are synthetic. The score matrix guarantees t
 - `SUP-JW-001` has the highest average with all experts;
 - `EXP-001` gives Jingwei 98 while other experts average 80, an 18-point deviation;
 - `SUP-ZJ-002` ranks first after removing `EXP-001`.
+
+At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`, `expert_scores`, and `evidence_files` tables plus the MinIO bucket `procurement-compliance-audit-fixtures`. `evidence_files.bucket/object_key` is the trusted PostgreSQL-to-MinIO locator. The pipeline, OCR actor, and AI request builder never read local paths.
 
 ## Relation contracts
 
@@ -178,7 +215,8 @@ The checked-in `runtime.yml` defines:
 | Setting | Default |
 | --- | --- |
 | Runner | `local` |
-| Fixture directory | `fixtures/expert-score-anomaly` |
+| PostgreSQL raw tables | `procurement_audit_raw.projects`, `suppliers`, `expert_scores`, `evidence_files` |
+| MinIO | `127.0.0.1:9000`, bucket `procurement-compliance-audit-fixtures` |
 | Output directory | `output` |
 | OCR | RapidOCR on CPU, minimum confidence `0.60` |
 | AI | OpenAI provider at `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
@@ -195,7 +233,7 @@ to:
 runner: ray
 ```
 
-Fixture contracts, AI relation calls, UDFs, and SQL files remain unchanged. Release validation currently covers `local` only; `ray` requires a smoke test on the target cluster.
+PostgreSQL/MinIO source contracts, AI relation calls, UDFs, and SQL files remain unchanged. Release validation currently covers `local` only; `ray` requires a smoke test on the target cluster.
 
 ## Troubleshooting
 
@@ -204,6 +242,8 @@ Fixture contracts, AI relation calls, UDFs, and SQL files remain unchanged. Rele
 | `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64 and Python 3.12, then use the complete TestPyPI plus extra-index command |
 | Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall the pinned wheel; the launcher reports the current interpreter, prefix, and expected/actual values |
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
+| PostgreSQL connection, authentication, or table initialization failure | Check the DSN, database/role, port, and schema/table read/write permissions |
+| MinIO connection, authentication, or object-read failure | Check endpoint, HTTP/TLS, access key, and bucket list/read/write/delete permissions |
 | Qwen health or image request fails | Use the [Qwen guide](local-qwen-service.zh.md) to check port, driver, OOM, model name, and proxy settings |
 | Output does not contain three findings | Inspect the terminal error and Qwen response; the default fixture's OCR or AI confidence did not meet its threshold |
 

@@ -11,6 +11,8 @@
 | 操作系统 | Ubuntu 24.04 x86_64，glibc 2.39 |
 | Python | CPython 3.12 |
 | Vane | `vane-ai==0.1.0.dev20260714234347` |
+| PostgreSQL | `127.0.0.1:5432`，database `vane_insight` |
+| MinIO | `127.0.0.1:9000`，HTTP |
 | 模型服务 | 本机 NVIDIA GPU 上的 `Qwen2.5-VL-3B-Instruct` |
 
 TestPyPI 上的 Vane wheel 面向 CPython 3.12、Linux x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python 次版本或其他 CPU 架构。
@@ -58,6 +60,8 @@ python -m pip check
 | --- | --- |
 | `vane-ai==0.1.0.dev20260714234347` | Vane API、custom DuckDB 和 worker |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
+| `psycopg` | 读取并初始化 PostgreSQL 原始表 |
+| `minio` | 读取并初始化 MinIO 原始材料对象 |
 | `rapidocr`、`onnxruntime` | 有状态 CPU OCR Actor |
 | `pillow` | 图片读取 |
 | `pyarrow` | Relation/Python 数据边界 |
@@ -65,6 +69,25 @@ python -m pip check
 | `pytest` | Fast tests |
 
 `pip check` 必须报告没有损坏的依赖。
+
+## 准备 PostgreSQL 与 MinIO
+
+仓库中的 `runtime.yml` 默认使用以下 loopback 合同：
+
+| 服务 | 默认合同 |
+| --- | --- |
+| PostgreSQL | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
+| MinIO | access/secret `vaneinsight` / `vaneinsight_dev_password`，`127.0.0.1:9000`，HTTP |
+
+可以复用现有服务，也可以按 PostgreSQL 与 MinIO 官方文档安装。`fixture` 命令会创建四张原始表和 MinIO bucket，并刷新合成数据；它不会创建 server、database/role、MinIO 进程或 access key。
+
+配置或服务准备完成后可独立初始化来源数据：
+
+```bash
+python scripts/run_demo.py fixture
+```
+
+pipeline 运行时不会再读取 `fixtures/`；该目录只为 `fixture` 命令提供可复现的合成 seed。
 
 ## 准备本地 Qwen 服务
 
@@ -83,10 +106,22 @@ curl -fsS -H 'Authorization: Bearer dummy' \
 
 ## 运行与验证
 
-运行真实 Pipeline：
+Launcher 提供三个命令：
 
 ```bash
-python scripts/run_demo.py
+python scripts/run_demo.py fixture
+python scripts/run_demo.py run
+python scripts/run_demo.py e2e
+```
+
+- `fixture`：把 1 个项目、3 家供应商、12 条评分和 2 条证据 locator 写入 PostgreSQL，并把 2 张 PNG 写入 MinIO。
+- `run`：探测 PostgreSQL/MinIO，完全从这两个服务读取输入，再执行真实 OCR、Qwen 与 SQL DAG。
+- `e2e`：顺序执行 `fixture -> run`。
+
+首次运行使用：
+
+```bash
+python scripts/run_demo.py e2e
 ```
 
 预期终端输出：
@@ -111,13 +146,13 @@ output/audit_summary.jsonl   # 1 行
 python -m pytest tests/fast -q
 ```
 
-## Fixture 合同
+## 合成 seed 与来源合同
 
-`fixtures/expert-score-anomaly/` 恰好包含四份业务输入：
+`fixtures/expert-score-anomaly/` 恰好包含四份合成 seed；只有 `fixture` 命令直接读取它们：
 
 | 文件 | Grain | 用途 |
 | --- | --- | --- |
-| `project.json` | 一个采购项目 | 供应商、图片 locator、原 winner 和规则阈值 |
+| `project.json` | 一个采购项目 | 供应商、MinIO object key、原 winner 和规则阈值 |
 | `expert_scores.csv` | expert × supplier，共 12 行 | 4 位专家对 3 家供应商的评分 |
 | `expert_recommendation.png` | 一张图片 | `EXP-001` 在招标前推荐景维自动化 |
 | `committee_minutes.png` | 一张图片 | `EXP-001` 参加评审且没有回避 |
@@ -127,6 +162,8 @@ python -m pytest tests/fast -q
 - 全部专家参与时，`SUP-JW-001` 平均分最高；
 - `EXP-001` 给景维 98 分，其他专家平均 80 分，偏差为 18 分；
 - 剔除 `EXP-001` 后，`SUP-ZJ-002` 排名第一。
+
+运行时的权威来源是 PostgreSQL 的 `projects`、`suppliers`、`expert_scores`、`evidence_files` 四张表和 MinIO bucket `procurement-compliance-audit-fixtures`。`evidence_files.bucket/object_key` 是 PostgreSQL 到 MinIO 原始材料的可信 locator；pipeline、OCR Actor 和 AI request builder 都不读取本地路径。
 
 ## Relation 合同
 
@@ -178,7 +215,8 @@ Qwen 只返回文档类型、专家编号、供应商、推荐、参评、回避
 | 配置项 | 默认值 |
 | --- | --- |
 | Runner | `local` |
-| Fixture 目录 | `fixtures/expert-score-anomaly` |
+| PostgreSQL 原始表 | `procurement_audit_raw.projects`、`suppliers`、`expert_scores`、`evidence_files` |
+| MinIO | `127.0.0.1:9000`，bucket `procurement-compliance-audit-fixtures` |
 | 输出目录 | `output` |
 | OCR | RapidOCR CPU，最低置信度 `0.60` |
 | AI | OpenAI provider，`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
@@ -195,7 +233,7 @@ runner: local
 runner: ray
 ```
 
-Fixture 合同、AI Relation 调用、UDF 和 SQL 文件保持不变。当前发布验收只覆盖 `local`；`ray` 需要在目标集群单独完成 smoke test。
+PostgreSQL/MinIO 来源合同、AI Relation 调用、UDF 和 SQL 文件保持不变。当前发布验收只覆盖 `local`；`ray` 需要在目标集群单独完成 smoke test。
 
 ## 排错
 
@@ -204,6 +242,8 @@ Fixture 合同、AI Relation 调用、UDF 和 SQL 文件保持不变。当前发
 | `No matching distribution found for vane-ai` | 确认 Ubuntu 24.04 x86_64 和 Python 3.12，并使用完整的 TestPyPI 与 extra-index 命令 |
 | Python/Vane/DuckDB 版本不匹配 | 重新激活 `.venv` 并安装固定 wheel；Launcher 会报告解释器、prefix 和 expected/actual |
 | 缺少直接依赖 | 执行 `python -m pip install -r requirements.txt` 和 `python -m pip check` |
+| PostgreSQL 连接、鉴权或表初始化失败 | 检查 DSN、database/role、端口，以及 schema/table 的读写权限 |
+| MinIO 连接、鉴权或对象读取失败 | 检查 endpoint、HTTP/TLS、access key，以及 bucket 的 list/read/write/delete 权限 |
 | Qwen health 或图片请求失败 | 按照[本地 Qwen 指南](local-qwen-service.zh.md)检查端口、driver、OOM、模型名和代理 |
 | 输出不是三条 finding | 检查终端错误和 Qwen 响应；默认 Fixture 的 OCR 或 AI confidence 没有达到门槛 |
 

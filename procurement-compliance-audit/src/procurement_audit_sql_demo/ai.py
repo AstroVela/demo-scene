@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 import json
-from pathlib import Path
 from typing import Any
 import urllib.request
 
@@ -13,7 +12,8 @@ import pyarrow as pa
 import vane
 
 from .config import AiConfig, RuntimeConfig
-from .fixture_loader import FixtureBundle
+from .minio_store import MinioStore
+from .source_data import SourceBundle
 from .vane_functions import (
     AuditFactContractError,
     stable_json,
@@ -83,9 +83,9 @@ class EvidenceAiRequest:
     image_bytes: bytes
 
 
-def _supplier_context(fixture: FixtureBundle) -> str:
+def _supplier_context(source: SourceBundle) -> str:
     suppliers = []
-    for row in fixture.suppliers.to_pylist():
+    for row in source.suppliers.to_pylist():
         suppliers.append(
             {
                 "supplier_id": row["supplier_id"],
@@ -154,7 +154,8 @@ def _retry_request(request: EvidenceAiRequest) -> EvidenceAiRequest:
 
 def build_evidence_ai_requests(
     ocr_rows: Iterable[Mapping[str, Any]],
-    fixture: FixtureBundle,
+    source: SourceBundle,
+    store: Any,
     *,
     minimum_confidence: float,
 ) -> list[EvidenceAiRequest]:
@@ -162,14 +163,14 @@ def build_evidence_ai_requests(
 
     if not 0.0 <= minimum_confidence <= 1.0:
         raise EvidenceAiInputError("minimum_confidence must be between 0 and 1")
-    project_rows = fixture.project.to_pylist()
+    project_rows = source.project.to_pylist()
     if len(project_rows) != 1:
-        raise EvidenceAiInputError("fixture must contain exactly one project")
+        raise EvidenceAiInputError("source must contain exactly one project")
     project_id = project_rows[0]["project_id"]
-    evidence_rows = fixture.evidence.to_pylist()
+    evidence_rows = source.evidence.to_pylist()
     evidence_by_id = {row["file_id"]: row for row in evidence_rows}
     evidence_order = {row["file_id"]: index for index, row in enumerate(evidence_rows)}
-    supplier_context = _supplier_context(fixture)
+    supplier_context = _supplier_context(source)
     pending: list[tuple[int, EvidenceAiRequest]] = []
     seen: set[str] = set()
 
@@ -188,13 +189,10 @@ def build_evidence_ai_requests(
         expected = evidence_by_id[file_id]
         if row.get("role") != expected["role"]:
             raise EvidenceAiInputError(f"OCR row {file_id} has mismatched role")
-        try:
-            row_path = Path(str(row.get("local_path"))).resolve()
-            expected_path = Path(expected["local_path"]).resolve()
-        except (TypeError, ValueError, OSError) as exc:
-            raise EvidenceAiInputError(f"OCR row {file_id} has invalid path") from exc
-        if row_path != expected_path:
-            raise EvidenceAiInputError(f"OCR row {file_id} has mismatched path")
+        if row.get("bucket") != expected["bucket"]:
+            raise EvidenceAiInputError(f"OCR row {file_id} has mismatched bucket")
+        if row.get("object_key") != expected["object_key"]:
+            raise EvidenceAiInputError(f"OCR row {file_id} has mismatched object key")
 
         confidence_value = row.get("ocr_confidence")
         if (
@@ -209,9 +207,16 @@ def build_evidence_ai_requests(
         if not isinstance(ocr_text, str) or not ocr_text.strip():
             raise EvidenceAiInputError(f"OCR row {file_id} text must be non-empty")
         try:
-            image_bytes = expected_path.read_bytes()
-        except OSError as exc:
-            raise EvidenceAiInputError(f"cannot read evidence file {file_id}: {exc}") from exc
+            value = store.get_bytes(expected["bucket"], expected["object_key"])
+        except Exception as exc:
+            raise EvidenceAiInputError(
+                f"cannot read MinIO evidence object {file_id}: {exc}"
+            ) from exc
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise EvidenceAiInputError(
+                f"MinIO evidence object {file_id} must be bytes-like"
+            )
+        image_bytes = bytes(value)
         pending.append(
             (
                 evidence_order[file_id],
@@ -304,26 +309,28 @@ def _validate_response_for_request(
 def build_evidence_ai_relation(
     ocr_rows: Iterable[Mapping[str, Any]],
     session: Any,
-    fixture: FixtureBundle,
+    source: SourceBundle,
     config: RuntimeConfig,
     *,
     prompt_function: Callable[..., Any] | None = None,
     health_probe: Callable[[AiConfig], None] = probe_qwen,
+    object_store: Any | None = None,
 ):
     """Run one multimodal relation call per qualified image and bind metadata."""
 
     requests = build_evidence_ai_requests(
         ocr_rows,
-        fixture,
+        source,
+        object_store or MinioStore(config.minio),
         minimum_confidence=config.ocr.minimum_confidence,
     )
     expected_file_ids = {
-        row["file_id"] for row in fixture.evidence.to_pylist()
+        row["file_id"] for row in source.evidence.to_pylist()
     }
     actual_file_ids = {request.file_id for request in requests}
     if actual_file_ids != expected_file_ids:
         raise EvidenceAiInputError(
-            "AI request coverage must match every fixture evidence image; "
+            "AI request coverage must match every source evidence image; "
             f"missing={sorted(expected_file_ids - actual_file_ids)}, "
             f"unexpected={sorted(actual_file_ids - expected_file_ids)}"
         )

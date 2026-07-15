@@ -15,7 +15,25 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "runtime.yml"
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
-_ROOT_FIELDS = {"version", "runner", "fixture_dir", "output_dir", "ocr", "ai"}
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ROOT_FIELDS = {
+    "version",
+    "runner",
+    "output_dir",
+    "postgres",
+    "minio",
+    "ocr",
+    "ai",
+}
+_POSTGRES_FIELDS = {
+    "dsn",
+    "raw_schema",
+    "project_table",
+    "supplier_table",
+    "score_table",
+    "evidence_table",
+}
+_MINIO_FIELDS = {"endpoint", "access_key", "secret_key", "secure", "bucket"}
 _OCR_FIELDS = {"engine", "device", "minimum_confidence"}
 _AI_FIELDS = {
     "provider",
@@ -32,6 +50,37 @@ _AI_FIELDS = {
 
 class ConfigError(ValueError):
     """Raised when the checked-in runtime configuration is invalid."""
+
+
+@dataclass(frozen=True)
+class PostgresConfig:
+    dsn: str
+    raw_schema: str
+    project_table: str
+    supplier_table: str
+    score_table: str
+    evidence_table: str
+
+    @property
+    def raw_relation_names(self) -> tuple[str, str, str, str]:
+        return tuple(
+            f"{self.raw_schema}.{table}"
+            for table in (
+                self.project_table,
+                self.supplier_table,
+                self.score_table,
+                self.evidence_table,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class MinioConfig:
+    endpoint: str
+    access_key: str
+    secret_key: str
+    secure: bool
+    bucket: str
 
 
 @dataclass(frozen=True)
@@ -58,14 +107,18 @@ class AiConfig:
 class RuntimeConfig:
     version: int
     runner: str
-    fixture_dir: Path
     output_dir: Path
+    postgres: PostgresConfig
+    minio: MinioConfig
     ocr: OcrConfig
     ai: AiConfig
 
     def redacted_summary(self) -> str:
         return (
-            f"runner={self.runner}; fixture={self.fixture_dir}; "
+            f"runner={self.runner}; "
+            f"postgres={','.join(self.postgres.raw_relation_names)}; "
+            f"minio={self.minio.endpoint}/{self.minio.bucket} "
+            f"secure={self.minio.secure}; "
             f"ocr={self.ocr.engine}/{self.ocr.device}; "
             f"ai={self.ai.provider}/{self.ai.model}"
         )
@@ -93,6 +146,20 @@ def _string(value: Mapping[str, Any], key: str, path: str) -> str:
     if _CONTROL_CHARACTERS.search(result):
         raise ConfigError(f"{path}.{key} must not contain control characters")
     return result
+
+
+def _identifier(value: Mapping[str, Any], key: str, path: str) -> str:
+    result = _string(value, key, path)
+    if not _IDENTIFIER.fullmatch(result):
+        raise ConfigError(f"{path}.{key} must be a SQL identifier")
+    return result
+
+
+def _boolean(value: Mapping[str, Any], key: str, path: str) -> bool:
+    item = value.get(key)
+    if not isinstance(item, bool):
+        raise ConfigError(f"{path}.{key} must be boolean")
+    return item
 
 
 def _project_path(config_path: Path, value: Mapping[str, Any], key: str) -> Path:
@@ -173,6 +240,27 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
     if runner not in {"local", "ray"}:
         raise ConfigError("configuration.runner must be local or ray")
 
+    postgres_value = _mapping(root.get("postgres"), "postgres")
+    _exact_fields(postgres_value, _POSTGRES_FIELDS, "postgres")
+    postgres = PostgresConfig(
+        dsn=_string(postgres_value, "dsn", "postgres"),
+        raw_schema=_identifier(postgres_value, "raw_schema", "postgres"),
+        project_table=_identifier(postgres_value, "project_table", "postgres"),
+        supplier_table=_identifier(postgres_value, "supplier_table", "postgres"),
+        score_table=_identifier(postgres_value, "score_table", "postgres"),
+        evidence_table=_identifier(postgres_value, "evidence_table", "postgres"),
+    )
+
+    minio_value = _mapping(root.get("minio"), "minio")
+    _exact_fields(minio_value, _MINIO_FIELDS, "minio")
+    minio = MinioConfig(
+        endpoint=_string(minio_value, "endpoint", "minio"),
+        access_key=_string(minio_value, "access_key", "minio"),
+        secret_key=_string(minio_value, "secret_key", "minio"),
+        secure=_boolean(minio_value, "secure", "minio"),
+        bucket=_string(minio_value, "bucket", "minio"),
+    )
+
     ocr_value = _mapping(root.get("ocr"), "ocr")
     _exact_fields(ocr_value, _OCR_FIELDS, "ocr")
     engine = _string(ocr_value, "engine", "ocr")
@@ -223,8 +311,9 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
     return RuntimeConfig(
         version=1,
         runner=runner,
-        fixture_dir=_project_path(config_path, root, "fixture_dir"),
         output_dir=_project_path(config_path, root, "output_dir"),
+        postgres=postgres,
+        minio=minio,
         ocr=ocr,
         ai=ai,
     )

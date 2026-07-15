@@ -4,16 +4,18 @@ with ocr_results as materialized (
     project_id,
     file_id,
     role,
-    local_path,
+    bucket,
+    object_key,
     media_type,
-    evidence_ocr_json(local_path) as ocr_json
+    evidence_ocr_json(bucket, object_key) as ocr_json
   from stg_evidence_images
 )
 select
   project_id,
   file_id,
   role,
-  local_path,
+  bucket,
+  object_key,
   media_type,
   cast(ocr_json as varchar) as ocr_json,
   json_extract_string(ocr_json, '$.status') as ocr_status,

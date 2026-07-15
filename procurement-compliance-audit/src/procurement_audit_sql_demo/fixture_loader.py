@@ -1,7 +1,8 @@
-"""Load and validate the focused four-file procurement fixture."""
+"""Validate the synthetic fixture and load it into PostgreSQL and MinIO."""
 
 from __future__ import annotations
 
+import argparse
 from collections import defaultdict
 import csv
 from dataclasses import dataclass
@@ -9,9 +10,13 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any, Mapping
+import sys
+from typing import Any, Mapping, Sequence
 
-import pyarrow as pa
+from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_runtime_config
+from .minio_store import MinioStore
+from .pg import connect_postgres, initialize_schema, reset_fixture_rows
+from .source_data import SourceBundle, source_bundle_from_rows
 
 
 EXPECTED_FIXTURE_FILES = frozenset(
@@ -22,6 +27,7 @@ EXPECTED_FIXTURE_FILES = frozenset(
         "committee_minutes.png",
     }
 )
+DEFAULT_FIXTURE_DIR = PROJECT_ROOT / "fixtures/expert-score-anomaly"
 _PROJECT_FIELDS = {
     "project_id",
     "title",
@@ -31,7 +37,7 @@ _PROJECT_FIELDS = {
     "thresholds",
 }
 _SUPPLIER_FIELDS = {"supplier_id", "name", "aliases"}
-_EVIDENCE_FIELDS = {"file_id", "role", "local_path", "media_type"}
+_EVIDENCE_FIELDS = {"file_id", "role", "object_key", "media_type"}
 _THRESHOLD_FIELDS = {"score_bias_points", "ai_min_confidence"}
 _SCORE_FIELDS = ("project_id", "expert_id", "expert_name", "supplier_id", "score")
 _IDENTIFIER = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+$")
@@ -42,12 +48,33 @@ class FixtureContractError(ValueError):
 
 
 @dataclass(frozen=True)
+class FixtureObject:
+    bucket: str
+    object_key: str
+    value: bytes
+    content_type: str
+
+
+@dataclass(frozen=True)
 class FixtureBundle:
-    project: pa.Table
-    suppliers: pa.Table
-    scores: pa.Table
-    evidence: pa.Table
-    source_dir: Path
+    source: SourceBundle
+    objects: tuple[FixtureObject, ...]
+
+    @property
+    def project(self):
+        return self.source.project
+
+    @property
+    def suppliers(self):
+        return self.source.suppliers
+
+    @property
+    def scores(self):
+        return self.source.scores
+
+    @property
+    def evidence(self):
+        return self.source.evidence
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -173,7 +200,8 @@ def _load_evidence(
     project: Mapping[str, Any],
     project_id: str,
     fixture_dir: Path,
-) -> list[dict[str, Any]]:
+    bucket: str,
+) -> tuple[list[dict[str, Any]], list[FixtureObject]]:
     values = project.get("evidence_files")
     if not isinstance(values, list) or len(values) != 2:
         raise FixtureContractError("evidence_files must contain exactly two rows")
@@ -181,6 +209,7 @@ def _load_evidence(
     seen_ids: set[str] = set()
     seen_roles: set[str] = set()
     expected_roles = {"expert_recommendation", "committee_minutes"}
+    objects: list[FixtureObject] = []
     for index, value in enumerate(values):
         path = f"evidence_files[{index}]"
         if not isinstance(value, Mapping) or set(value) != _EVIDENCE_FIELDS:
@@ -188,17 +217,22 @@ def _load_evidence(
         file_id = _identifier(value["file_id"], f"{path}.file_id")
         role = _non_empty_text(value["role"], f"{path}.role")
         media_type = _non_empty_text(value["media_type"], f"{path}.media_type")
-        local_value = _non_empty_text(value["local_path"], f"{path}.local_path")
-        local_path = (fixture_dir / local_value).resolve()
+        object_key = _non_empty_text(value["object_key"], f"{path}.object_key")
+        object_parts = object_key.split("/")
+        if object_key.startswith("/") or any(
+            part in {"", ".", ".."} for part in object_parts
+        ):
+            raise FixtureContractError(f"{path}.object_key is invalid")
+        seed_path = (fixture_dir / object_parts[-1]).resolve()
         try:
-            local_path.relative_to(fixture_dir)
+            seed_path.relative_to(fixture_dir)
         except ValueError as exc:
-            raise FixtureContractError(f"{path}.local_path must stay inside the fixture") from exc
-        if Path(local_value).is_absolute():
-            raise FixtureContractError(f"{path}.local_path must stay inside the fixture")
-        if not local_path.is_file():
-            raise FixtureContractError(f"{path}.local_path does not exist: {local_value}")
-        if media_type != "image/png" or local_path.suffix.lower() != ".png":
+            raise FixtureContractError(f"{path}.object_key is invalid") from exc
+        if not seed_path.is_file():
+            raise FixtureContractError(
+                f"{path}.object_key has no matching seed asset: {object_parts[-1]}"
+            )
+        if media_type != "image/png" or not object_key.lower().endswith(".png"):
             raise FixtureContractError(f"{path} must point to an image/png")
         if file_id in seen_ids or role in seen_roles:
             raise FixtureContractError("evidence file IDs and roles must be unique")
@@ -209,13 +243,22 @@ def _load_evidence(
                 "project_id": project_id,
                 "file_id": file_id,
                 "role": role,
-                "local_path": str(local_path),
+                "bucket": bucket,
+                "object_key": object_key,
                 "media_type": media_type,
             }
         )
+        objects.append(
+            FixtureObject(
+                bucket=bucket,
+                object_key=object_key,
+                value=seed_path.read_bytes(),
+                content_type=media_type,
+            )
+        )
     if seen_roles != expected_roles:
         raise FixtureContractError(f"evidence roles must be {sorted(expected_roles)}")
-    return rows
+    return rows, objects
 
 
 def _load_scores(
@@ -287,8 +330,11 @@ def _winner(rows: list[dict[str, Any]]) -> str:
     )
 
 
-def load_fixture(fixture_dir: Path | str) -> FixtureBundle:
-    """Validate all source data and return the four runtime Arrow inputs."""
+def build_fixture(
+    fixture_dir: Path | str = DEFAULT_FIXTURE_DIR,
+    bucket: str = "procurement-compliance-audit-fixtures",
+) -> FixtureBundle:
+    """Validate local seed assets without treating them as runtime inputs."""
 
     root = Path(fixture_dir).resolve()
     if not root.is_dir():
@@ -313,7 +359,7 @@ def load_fixture(fixture_dir: Path | str) -> FixtureBundle:
     if original_winner not in supplier_ids:
         raise FixtureContractError("original_winner_supplier_id is unknown")
     score_bias_threshold, ai_min_confidence = _load_thresholds(project)
-    evidence = _load_evidence(project, project_id, root)
+    evidence, objects = _load_evidence(project, project_id, root, bucket)
     scores = _load_scores(root / "expert_scores.csv", project_id, supplier_ids)
     if _winner(scores) != original_winner:
         raise FixtureContractError("declared original winner does not match score matrix")
@@ -325,10 +371,91 @@ def load_fixture(fixture_dir: Path | str) -> FixtureBundle:
         "score_bias_threshold": score_bias_threshold,
         "ai_min_confidence": ai_min_confidence,
     }
-    return FixtureBundle(
-        project=pa.Table.from_pylist([project_row]),
-        suppliers=pa.Table.from_pylist(suppliers),
-        scores=pa.Table.from_pylist(scores),
-        evidence=pa.Table.from_pylist(evidence),
-        source_dir=root,
+    source = source_bundle_from_rows(
+        [project_row],
+        suppliers,
+        scores,
+        evidence,
+        expected_bucket=bucket,
     )
+    return FixtureBundle(source=source, objects=tuple(objects))
+
+
+def load_fixture(
+    config_path: Path | str = DEFAULT_CONFIG_PATH,
+    fixture_dir: Path | str = DEFAULT_FIXTURE_DIR,
+) -> tuple[int, int, int]:
+    """Refresh the PostgreSQL snapshot and MinIO objects used by the runtime."""
+
+    config = load_runtime_config(config_path)
+    fixture = build_fixture(fixture_dir, config.minio.bucket)
+    source = fixture.source
+
+    with connect_postgres(config.postgres) as connection:
+        initialize_schema(connection, config.postgres)
+        reset_fixture_rows(
+            connection,
+            config.postgres,
+            projects=source.project.to_pylist(),
+            suppliers=source.suppliers.to_pylist(),
+            scores=source.scores.to_pylist(),
+            evidence=source.evidence.to_pylist(),
+        )
+
+    store = MinioStore(config.minio)
+    store.probe()
+    store.ensure_bucket(config.minio.bucket)
+    for project in source.project.to_pylist():
+        store.remove_prefix(
+            config.minio.bucket,
+            f"procurement/{project['project_id']}/",
+        )
+    for item in fixture.objects:
+        store.put_bytes(
+            item.bucket,
+            item.object_key,
+            item.value,
+            item.content_type,
+        )
+
+    return source.project.num_rows, source.scores.num_rows, len(fixture.objects)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Load procurement audit fixtures into PostgreSQL and MinIO."
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Runtime YAML path.",
+    )
+    parser.add_argument(
+        "--fixture-dir",
+        type=Path,
+        default=DEFAULT_FIXTURE_DIR,
+        help="Local synthetic seed asset directory.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        project_count, score_count, object_count = load_fixture(
+            args.config,
+            args.fixture_dir,
+        )
+    except Exception as exc:
+        print(f"fixture load failed: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"loaded {project_count} project, {score_count} scores and "
+        f"{object_count} MinIO objects"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

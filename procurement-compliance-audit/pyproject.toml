@@ -9,9 +9,11 @@ description = "Focused Vane SQL demo for procurement expert-score auditing"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "minio>=7.2,<8",
   "onnxruntime>=1.21,<2",
   "openai==2.45.0",
   "pillow>=12,<13",
+  "psycopg[binary]>=3.2,<4",
   "pyarrow>=18,<22",
   "pyyaml>=6,<7",
   "rapidocr>=3,<4",
