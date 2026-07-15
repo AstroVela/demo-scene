@@ -43,19 +43,32 @@ def test_queries_are_read_only_and_cover_all_eight_relations():
         assert f"select * from {relation_name}" in queries.lower()
 
 
-def test_readme_contains_run_path_story_and_all_vane_capabilities():
+def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    runbooks = {
+        name: (PROJECT_ROOT / name).read_text(encoding="utf-8")
+        for name in ("docs/runbook.md", "docs/runbook.zh-CN.md")
+    }
     qwen_guide_path = PROJECT_ROOT / "docs/local-qwen-service.zh.md"
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
 
-    assert "python3.12 -m venv .venv" in readme
-    assert "https://test.pypi.org/simple/" in readme
-    assert "--extra-index-url https://pypi.org/simple/" in readme
-    assert "vane-ai==0.1.0.dev20260714234347" in readme
-    assert "python -m pip install -r requirements.txt" in readme
+    for name, runbook in runbooks.items():
+        for required in (
+            "python3.12 -m venv .venv",
+            "https://test.pypi.org/simple/",
+            "--extra-index-url https://pypi.org/simple/",
+            "vane-ai==0.1.0.dev20260714234347",
+            "python -m pip install -r requirements.txt",
+            "Qwen2.5-VL-3B-Instruct",
+            "runner: local",
+            "runner: ray",
+        ):
+            assert required in runbook, f"{name} is missing {required!r}"
+
     assert "python scripts/run_demo.py" in readme
+    assert "docs/runbook.md" in readme
     assert "docs/local-qwen-service.zh.md" in readme
     assert qwen_guide_path.is_file()
     qwen_guide = qwen_guide_path.read_text(encoding="utf-8")
@@ -64,12 +77,11 @@ def test_readme_contains_run_path_story_and_all_vane_capabilities():
     assert "/v1/chat/completions" in qwen_guide
     assert "vane-ai==0.1.0.dev20260714234347" in project["dependencies"]
     assert "openai==2.45.0" in project["dependencies"]
-    assert "Qwen2.5-VL-3B-Instruct" in readme
-    assert "stateful UDF" in readme
-    assert "stateless UDF" in readme
+    assert "@vane.cls" in readme
+    assert "@vane.func" in readme
+    assert "vane.ai.prompt" in readme
     assert "AI Function" in readme
     assert "SUP-JW-001" in readme and "SUP-ZJ-002" in readme
-    assert "local" in readme and "ray" in readme
 
 
 def test_old_demo_is_not_a_runtime_dependency():

@@ -2,7 +2,7 @@
 
 [中文版](local-qwen-service.zh.md)
 
-This guide creates the loopback-only OpenAI-compatible multimodal service used by the Claims Disposition SQL Demo. The checked-in `runtime.yml` expects:
+This guide creates the loopback-only OpenAI-compatible multimodal service used by the multimodal claims triage demo. The checked-in `runtime.yml` expects:
 
 - API base URL: `http://127.0.0.1:8001/v1`
 - health URL: `http://127.0.0.1:8001/health`

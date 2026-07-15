@@ -38,12 +38,12 @@ def test_packaging_declares_every_direct_runtime_dependency():
     assert (PROJECT_ROOT / "requirements.txt").read_text(
         encoding="utf-8"
     ).splitlines() == [
-        "# Install the pinned TestPyPI Vane wheel first; see README.md.",
+        "# Install the pinned TestPyPI Vane wheel first; see docs/runbook.md.",
         "-e .[test]",
     ]
 
 
-def test_readmes_document_a_fresh_environment_and_all_services():
+def test_runbooks_document_a_fresh_environment_and_all_services():
     required_fragments = (
         "python3.12 -m venv .venv",
         "https://test.pypi.org/simple/",
@@ -61,13 +61,13 @@ def test_readmes_document_a_fresh_environment_and_all_services():
         "v1.6.0-dev121",
         "ca6948529b",
     )
-    for name in ("README.md", "README.zh-CN.md"):
+    for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
         for required in required_fragments:
             assert required in text, f"{name} is missing {required!r}"
 
 
-def test_readmes_explain_direct_dependency_roles_and_service_ownership():
+def test_runbooks_explain_direct_dependencies_and_service_ownership():
     dependency_names = (
         "openai",
         "minio",
@@ -81,7 +81,7 @@ def test_readmes_explain_direct_dependency_roles_and_service_ownership():
         "pytz",
         "pytest",
     )
-    for name in ("README.md", "README.zh-CN.md"):
+    for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8").lower()
         for dependency in dependency_names:
             assert dependency in text, f"{name} does not explain {dependency}"
@@ -119,6 +119,8 @@ def test_release_files_do_not_reference_the_legacy_runtime():
     release_files = [
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "README.zh-CN.md",
+        PROJECT_ROOT / "docs/runbook.md",
+        PROJECT_ROOT / "docs/runbook.zh-CN.md",
         PROJECT_ROOT / "pyproject.toml",
         PROJECT_ROOT / "requirements.txt",
         PROJECT_ROOT / "runtime.yml",
