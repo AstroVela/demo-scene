@@ -1,0 +1,51 @@
+{
+  "classification": "synthetic_governance_metadata",
+  "dataset": "enterprise_multimodal_agent_scenario_snapshot",
+  "description": "Deterministic review scenarios linked to separately pinned public assets; these rows are not customer records.",
+  "expected_results": {
+    "cases": 4,
+    "conflicts": 1,
+    "evidence_links": 8,
+    "gaps": 1,
+    "requirements": 8,
+    "review_queue": 3
+  },
+  "files": [
+    {
+      "columns": [
+        "case_id",
+        "account_id",
+        "business_question",
+        "review_due_at"
+      ],
+      "file": "cases.csv",
+      "records": 4,
+      "sha256": "e94fef1873ebf7d32ffe994735c875245f4ee6f610c0dcdb504c0d902651d960"
+    },
+    {
+      "columns": [
+        "record_id",
+        "case_id",
+        "asset_id",
+        "source_system",
+        "observed_at",
+        "evidence_title",
+        "claim_key",
+        "claim_value"
+      ],
+      "file": "evidence_links.csv",
+      "records": 8,
+      "sha256": "7fc81ab5a5765c0155d7b50dd156d04ba274a20369c69fe3c62db9002eb78e6c"
+    },
+    {
+      "columns": [
+        "case_id",
+        "evidence_type"
+      ],
+      "file": "requirements.csv",
+      "records": 8,
+      "sha256": "dba85c753407d983f5e2325d299d2256c54f3c65156c319acf3a11decda2c850"
+    }
+  ],
+  "schema_version": 1
+}

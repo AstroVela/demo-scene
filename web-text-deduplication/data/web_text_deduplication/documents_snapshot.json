@@ -1,0 +1,23 @@
+{
+  "block_rows": 24,
+  "data_classification": "synthetic_fixture",
+  "dataset": "web_text_deduplication_offline_fixture",
+  "expected_results": {
+    "candidate_pair_rows": 18,
+    "candidate_pair_slots": 80,
+    "cluster_count": 12,
+    "document_rows": 24,
+    "duplicate_pair_rows": 18,
+    "exact_duplicate_pair_rows": 6,
+    "near_duplicate_pair_rows": 12,
+    "representative_rows": 12
+  },
+  "generation_command": ".venv/bin/python scripts/prepare_web_text_deduplication_fixture.py",
+  "license_id": "Apache-2.0",
+  "license_uri": "https://www.apache.org/licenses/LICENSE-2.0",
+  "snapshot": "data/web_text_deduplication/documents.csv",
+  "snapshot_bytes": 11827,
+  "snapshot_sha256": "7a9f14e2e6cc116d1beb8e716e8bbe10fe8ece032b17aa1a7f31f77eb4e4e824",
+  "source": "repository-authored deterministic text",
+  "third_party_crawled_content": false
+}

@@ -355,14 +355,14 @@ def test_batch_processors_run_via_map_batches(tmp_path: Path) -> None:
     conn = vane.connect()
     photo_result = map_batches_with_backend(
         conn.from_arrow(photo_table),
-        PhotoQualityBatch(),
+        PhotoQualityBatch().__call__,
         schema=PHOTO_EVIDENCE.duckdb_schema(),
         batch_size=1,
         execution_backend="local",
     ).to_arrow_table().to_pylist()
     document_result = map_batches_with_backend(
         conn.from_arrow(document_table),
-        FUNSDDocumentExtractBatch(),
+        FUNSDDocumentExtractBatch().__call__,
         schema=DOCUMENT_EVIDENCE.duckdb_schema(),
         batch_size=1,
         execution_backend="local",

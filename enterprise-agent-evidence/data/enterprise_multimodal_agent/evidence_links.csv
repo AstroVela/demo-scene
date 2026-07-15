@@ -1,0 +1,9 @@
+record_id,case_id,asset_id,source_system,observed_at,evidence_title,claim_key,claim_value
+arrow-docs-project,case-arrow-docs,arrow-project-readme,github_release,2026-07-15,Apache Arrow project README,source_readiness,ready
+arrow-docs-python,case-arrow-docs,arrow-python-readme,github_release,2026-07-16,Apache Arrow Python README,source_readiness,ready
+wikimedia-generic-image,case-wikimedia-media,wikimedia-generic-file,wikimedia_commons,2026-07-16,Generic file SVG,media_readiness,ready
+wikimedia-small-image,case-wikimedia-media,wikimedia-download-icon,wikimedia_commons,2026-07-17,Low-resolution download SVG,media_readiness,blocked
+wikimedia-audio-sample,case-wikimedia-media,wikimedia-audio,wikimedia_commons,2026-07-18,CC0 WAV sample,media_readiness,ready
+mixed-project-doc,case-incomplete-bundle,arrow-project-readme,github_release,2026-07-18,Apache Arrow project README,package_readiness,ready
+mixed-generic-image,case-incomplete-bundle,wikimedia-generic-file,wikimedia_commons,2026-07-18,Generic file SVG,package_readiness,ready
+stale-python-doc,case-stale-docs,arrow-python-readme,github_release,2026-05-01,Older Apache Arrow Python snapshot,source_readiness,ready

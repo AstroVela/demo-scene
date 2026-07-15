@@ -7,6 +7,9 @@ Scripts and samples for reproducible Vane demos.
 ### AI / Data Pipelines
 
 * [Claims Evidence Graph with Vane](claims-evidence-graph)
+* [Multimodal Training Data Release with Vane](multimodal-training-data) — typed Relation branches and Arrow batch UDFs
+* [Enterprise Agent Evidence Governance with Vane](enterprise-agent-evidence) — multi-table joins, policy SQL, and review artifacts
+* [Web Text Deduplication with Vane](web-text-deduplication) — custom data sources, MinHash batch UDFs, and graph clustering
 
 ## Repository Policy
 

@@ -309,12 +309,12 @@ class FUNSDDocumentExtractBatch:
 
 PHOTO_QUALITY_UDF = BatchUDFSpec(
     name="photo_quality",
-    processor=PhotoQualityBatch(),
+    processor=PhotoQualityBatch().__call__,
     output_contract=PHOTO_EVIDENCE,
 )
 
 FUNSD_DOCUMENT_EXTRACT_UDF = BatchUDFSpec(
     name="funsd_document_extract",
-    processor=FUNSDDocumentExtractBatch(),
+    processor=FUNSDDocumentExtractBatch().__call__,
     output_contract=DOCUMENT_EVIDENCE,
 )
