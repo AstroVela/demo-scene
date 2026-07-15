@@ -44,7 +44,7 @@ from pathlib import Path
 
 import vane
 
-from examples.enterprise_multimodal_agent import (
+from src.enterprise_multimodal_agent import (
     DEFAULT_ASSET_CATALOG,
     DEFAULT_INPUT_DIR,
     materialize_sources,
@@ -203,7 +203,7 @@ status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
 Run the offline example:
 
 ~~~bash
-.venv/bin/python examples/enterprise_multimodal_agent.py
+VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
 ~~~
 
 Expected summary:
@@ -224,14 +224,14 @@ Refresh and verify the public asset snapshot:
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
-Use --input-dir for another scenario and --asset-catalog for another governed asset manifest. --execution-backend can pin subprocess_task or ray_task. The Relation SQL path currently requires the native runner.
+Use --input-dir for another scenario and --asset-catalog for another governed asset manifest. --execution-backend can pin subprocess_task or ray_task. The Relation SQL path requires the `local-fast` runner because its named tables live in the client connection.
 
 The pinned default run fails before processing when a scenario CSV, asset catalog, source manifest, or payload no longer matches its snapshot. Its manifest uses repository-relative paths so results do not expose a developer workstation path. Custom input directories still receive semantic integrity checks, but are reported as custom_inputs and are not claimed as snapshot-verified.
 
 Focused verification:
 
 ~~~bash
-.venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
 ~~~
 
 ## Example boundaries

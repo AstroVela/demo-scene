@@ -1,5 +1,7 @@
 # Web Text Deduplication with Vane
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Detect exact and near-duplicate text with deterministic MinHash fingerprints,
 global LSH candidates, exact Jaccard verification, and stable graph clusters.
 The pipeline writes candidate diagnostics, review tables, and a deduplicated
@@ -35,7 +37,7 @@ Python 3.10 or newer is required:
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python examples/web_text_deduplication.py
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py
 ~~~
 
 Expected summary:
@@ -58,8 +60,8 @@ pipeline retains 12 representatives.
 Run the focused tests:
 
 ~~~bash
-.venv/bin/python -m unittest discover -s tests -p 'test_*crawl*.py' -v
-.venv/bin/python -m unittest discover -s tests -p 'test_web_text_deduplication.py' -v
+VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests -p 'test_*crawl*.py' -v
+VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests -p 'test_web_text_deduplication.py' -v
 ~~~
 
 ## Algorithm
@@ -113,7 +115,7 @@ Generate a local manifest and snapshot from the checked-in IANA example-domain
 targets:
 
 ~~~bash
-.venv/bin/python scripts/prepare_web_text_deduplication_data.py \
+VANE_RUNNER=local-fast .venv/bin/python scripts/prepare_web_text_deduplication_data.py \
   --refresh-index \
   --acknowledge-common-crawl-terms
 ~~~
@@ -121,7 +123,7 @@ targets:
 Run the verified local snapshot:
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --input workspace/web_text_deduplication/common_crawl_blocks.parquet \
   --snapshot-metadata workspace/web_text_deduplication/common_crawl_snapshot.json \
   --output-dir output/web_text_deduplication_common_crawl
@@ -133,7 +135,7 @@ non-overlapping HTML text blocks before deduplication.
 Or replay its WARC ranges live:
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --source common-crawl \
   --record-manifest workspace/web_text_deduplication/common_crawl_records.csv \
   --acknowledge-common-crawl-terms \
@@ -158,9 +160,10 @@ exact scoring, recursive clustering, source verification, and current scope.
 web-text-deduplication/
 ├── data/web_text_deduplication/  # safe fixture, metadata, and target list
 ├── docs/                         # English and Chinese tutorials
-├── examples/                     # dedupe pipeline and WARC helpers
+├── src/                          # dedupe pipeline and WARC helpers
 ├── scripts/                      # fixture and opt-in crawl preparation
 ├── tests/                        # algorithm, failure, and source tests
 ├── README.md
+├── README.zh-CN.md
 └── requirements.txt
 ~~~

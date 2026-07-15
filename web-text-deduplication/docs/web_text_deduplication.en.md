@@ -242,13 +242,13 @@ Install dependencies and run the offline fixture:
 ~~~bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python examples/web_text_deduplication.py
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py
 ~~~
 
 Focused tests:
 
 ~~~bash
-.venv/bin/python -m unittest -v \
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v \
   tests.test_web_text_deduplication \
   tests.test_common_crawl_source
 ~~~
@@ -271,7 +271,7 @@ The checked-in target list uses only IANA example domains. Generate the record
 manifest and extracted snapshot locally:
 
 ~~~bash
-.venv/bin/python scripts/prepare_web_text_deduplication_data.py \
+VANE_RUNNER=local-fast .venv/bin/python scripts/prepare_web_text_deduplication_data.py \
   --refresh-index \
   --acknowledge-common-crawl-terms
 ~~~
@@ -283,7 +283,7 @@ They should not be committed.
 Run the verified local snapshot:
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --input workspace/web_text_deduplication/common_crawl_blocks.parquet \
   --snapshot-metadata workspace/web_text_deduplication/common_crawl_snapshot.json \
   --output-dir output/web_text_deduplication_common_crawl
@@ -292,7 +292,7 @@ Run the verified local snapshot:
 Or read the prepared WARC ranges live:
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --source common-crawl \
   --record-manifest workspace/web_text_deduplication/common_crawl_records.csv \
   --acknowledge-common-crawl-terms \
@@ -311,7 +311,7 @@ removes duplicate block text before applying the per-page row limit.
 Supply any CSV or Parquet with the six base columns:
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --input path/to/documents.parquet \
   --output-dir output/custom_dedup
 ~~~

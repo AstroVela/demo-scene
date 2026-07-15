@@ -31,13 +31,13 @@ def backend_metadata_entry(execution_backend: str) -> dict[str, Any]:
 
 def require_local_relation_runner(runner: str | None) -> str:
     normalized = str(runner or "").strip().lower()
-    if normalized == "ray":
+    if normalized != "local-fast":
         raise RuntimeError(
-            "runner='ray' is not supported by these examples because their named "
-            "tables live in the client connection; use a native runner and select "
-            "--execution-backend ray_task when Ray-backed batch UDFs are required"
+            f"runner={normalized!r} is not supported by these examples because "
+            "their named tables live in the client connection; set "
+            "VANE_RUNNER=local-fast"
         )
-    return normalized or "native"
+    return normalized
 
 
 def positive_int(value: str) -> int:

@@ -16,7 +16,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from examples.multimodal_training_data import (
+from src._common import require_local_relation_runner
+from src.multimodal_training_data import (
     decode_payload,
     process_audio,
     process_document,
@@ -29,17 +30,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MultimodalTrainingDataTest(unittest.TestCase):
+    def test_relation_runner_requires_local_fast(self) -> None:
+        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
+        for runner in ("", "local", "ray"):
+            with self.subTest(runner=runner):
+                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
+                    require_local_relation_runner(runner)
+
     def run_example(self, output_dir: Path, *extra_args: str) -> None:
         completed = subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "examples" / "multimodal_training_data.py"),
+                str(REPO_ROOT / "src" / "multimodal_training_data.py"),
                 "--output-dir",
                 str(output_dir),
                 *extra_args,
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": ""},
+            env={**os.environ, "VANE_RUNNER": "local-fast"},
             text=True,
             capture_output=True,
             timeout=90,
@@ -217,7 +225,7 @@ class MultimodalTrainingDataTest(unittest.TestCase):
     def test_default_run_rejects_tampered_catalog_lineage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-multimodal-snapshot-") as tmp_dir:
             copied_root = Path(tmp_dir) / "multimodal-training-data"
-            shutil.copytree(REPO_ROOT / "examples", copied_root / "examples")
+            shutil.copytree(REPO_ROOT / "src", copied_root / "src")
             shutil.copytree(REPO_ROOT / "data", copied_root / "data")
             catalog_path = (
                 copied_root
@@ -239,12 +247,12 @@ class MultimodalTrainingDataTest(unittest.TestCase):
             completed = subprocess.run(
                 [
                     sys.executable,
-                    str(copied_root / "examples" / "multimodal_training_data.py"),
+                    str(copied_root / "src" / "multimodal_training_data.py"),
                     "--output-dir",
                     str(copied_root / "output"),
                 ],
                 cwd=copied_root,
-                env={**os.environ, "VANE_RUNNER": ""},
+                env={**os.environ, "VANE_RUNNER": "local-fast"},
                 text=True,
                 capture_output=True,
                 timeout=30,
@@ -367,11 +375,11 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                 completed = subprocess.run(
                     [
                         sys.executable,
-                        str(REPO_ROOT / "examples" / "multimodal_training_data.py"),
+                        str(REPO_ROOT / "src" / "multimodal_training_data.py"),
                         *extra_args,
                     ],
                     cwd=REPO_ROOT,
-                    env={**os.environ, "VANE_RUNNER": ""},
+                    env={**os.environ, "VANE_RUNNER": "local-fast"},
                     text=True,
                     capture_output=True,
                     timeout=30,
@@ -382,7 +390,7 @@ class MultimodalTrainingDataTest(unittest.TestCase):
 
     def test_script_and_docs_keep_the_training_release_boundary(self) -> None:
         paths = [
-            REPO_ROOT / "examples" / "multimodal_training_data.py",
+            REPO_ROOT / "src" / "multimodal_training_data.py",
             REPO_ROOT / "docs" / "multimodal_training_data.en.md",
             REPO_ROOT / "docs" / "multimodal_training_data.zh-CN.md",
         ]
@@ -399,6 +407,15 @@ class MultimodalTrainingDataTest(unittest.TestCase):
             self.assertNotIn("semantic_matches", text, msg=str(path))
             self.assertNotIn("query_embedding", text, msg=str(path))
             self.assertNotIn('conn.register("raw_records"', text, msg=str(path))
+
+    def test_readmes_link_languages_and_current_entrypoint(self) -> None:
+        english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        self.assertIn("[简体中文](README.zh-CN.md)", english)
+        self.assertIn("[English](README.md)", chinese)
+        for text in (english, chinese):
+            self.assertIn("src/multimodal_training_data.py", text)
+            self.assertNotIn("examples/multimodal_training_data.py", text)
 
     def test_docs_explain_public_snapshot_and_synthetic_modes(self) -> None:
         docs = [

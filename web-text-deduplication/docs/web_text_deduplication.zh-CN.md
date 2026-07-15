@@ -198,13 +198,13 @@ representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
 ~~~bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python examples/web_text_deduplication.py
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py
 ~~~
 
 聚焦测试：
 
 ~~~bash
-.venv/bin/python -m unittest -v \
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v \
   tests.test_web_text_deduplication \
   tests.test_common_crawl_source
 ~~~
@@ -224,7 +224,7 @@ python3 -m venv .venv
 仓库中的目标清单只使用 IANA 示例域名。先在本地生成 WARC 记录清单和抽取快照：
 
 ~~~bash
-.venv/bin/python scripts/prepare_web_text_deduplication_data.py \
+VANE_RUNNER=local-fast .venv/bin/python scripts/prepare_web_text_deduplication_data.py \
   --refresh-index \
   --acknowledge-common-crawl-terms
 ~~~
@@ -234,7 +234,7 @@ python3 -m venv .venv
 对本地快照运行去重：
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --input workspace/web_text_deduplication/common_crawl_blocks.parquet \
   --snapshot-metadata workspace/web_text_deduplication/common_crawl_snapshot.json \
   --output-dir output/web_text_deduplication_common_crawl
@@ -243,7 +243,7 @@ python3 -m venv .venv
 也可以用准备好的记录清单实时读取 WARC 字节范围：
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --source common-crawl \
   --record-manifest workspace/web_text_deduplication/common_crawl_records.csv \
   --acknowledge-common-crawl-terms \
@@ -257,7 +257,7 @@ WARC 路径检查 HTTP 206、字节长度和目标 URI，并交叉比对 WARC �
 任何包含六个基础字段的 CSV 或 Parquet 都可以接入：
 
 ~~~bash
-.venv/bin/python examples/web_text_deduplication.py \
+VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
   --input path/to/documents.parquet \
   --output-dir output/custom_dedup
 ~~~

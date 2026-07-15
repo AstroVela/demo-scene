@@ -15,7 +15,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from examples.enterprise_multimodal_agent import (
+from src._common import require_local_relation_runner
+from src.enterprise_multimodal_agent import (
     DEFAULT_SCENARIO_SNAPSHOT,
     REVIEW_QUEUE_ORDER,
     verify_scenario_snapshot,
@@ -29,7 +30,7 @@ ASSET_DIR = DATA_DIR
 
 def example_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["VANE_RUNNER"] = ""
+    env["VANE_RUNNER"] = "local-fast"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -37,6 +38,13 @@ def example_subprocess_env() -> dict[str, str]:
 
 
 class EnterpriseMultimodalAgentTest(unittest.TestCase):
+    def test_relation_runner_requires_local_fast(self) -> None:
+        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
+        for runner in ("", "local", "ray"):
+            with self.subTest(runner=runner):
+                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
+                    require_local_relation_runner(runner)
+
     def run_command(
         self,
         output_dir: Path,
@@ -45,7 +53,7 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
         return subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "examples" / "enterprise_multimodal_agent.py"),
+                str(REPO_ROOT / "src" / "enterprise_multimodal_agent.py"),
                 "--output-dir",
                 str(output_dir),
                 *extra_args,
@@ -86,7 +94,7 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertEqual(manifest["gap_rows"], 1)
             self.assertEqual(manifest["conflict_rows"], 1)
             self.assertEqual(manifest["review_rows"], 3)
-            self.assertEqual(manifest["runner"], "native")
+            self.assertEqual(manifest["runner"], "local-fast")
             self.assertEqual(manifest["requested_execution_backend"], "auto")
             self.assertIsNone(manifest["execution_backend"])
             self.assertEqual(
@@ -259,9 +267,9 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
     def test_enterprise_assets_do_not_embed_the_training_data_example(self) -> None:
         self.assertFalse((REPO_ROOT / "data" / "multimodal_training_data").exists())
         self.assertFalse(
-            (REPO_ROOT / "examples" / "multimodal_training_data.py").exists()
+            (REPO_ROOT / "src" / "multimodal_training_data.py").exists()
         )
-        self.assertTrue((REPO_ROOT / "examples" / "_media.py").is_file())
+        self.assertTrue((REPO_ROOT / "src" / "_media.py").is_file())
         self.assertTrue((DATA_DIR / "assets").is_dir())
         self.assertTrue(
             (REPO_ROOT / "scripts" / "prepare_enterprise_agent_assets.py").is_file()
@@ -433,7 +441,7 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
 
     def test_script_and_docs_describe_real_multimodal_boundary(self) -> None:
         paths = [
-            REPO_ROOT / "examples" / "enterprise_multimodal_agent.py",
+            REPO_ROOT / "src" / "enterprise_multimodal_agent.py",
             REPO_ROOT / "docs" / "enterprise_multimodal_agent.en.md",
             REPO_ROOT / "docs" / "enterprise_multimodal_agent.zh-CN.md",
         ]
@@ -452,6 +460,15 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertNotIn("stable_embedding", text, msg=str(path))
             self.assertNotIn("context_embedding", text, msg=str(path))
             self.assertNotIn('conn.register("raw_evidence"', text, msg=str(path))
+
+    def test_readmes_link_languages_and_current_entrypoint(self) -> None:
+        english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        self.assertIn("[简体中文](README.zh-CN.md)", english)
+        self.assertIn("[English](README.md)", chinese)
+        for text in (english, chinese):
+            self.assertIn("src/enterprise_multimodal_agent.py", text)
+            self.assertNotIn("examples/enterprise_multimodal_agent.py", text)
 
 
 if __name__ == "__main__":

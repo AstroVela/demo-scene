@@ -12,7 +12,7 @@ import pyarrow as pa
 from warcio.statusandheaders import StatusAndHeaders
 from warcio.warcwriter import WARCWriter
 
-from examples._common_crawl import (
+from src._common_crawl import (
     CommonCrawlRangeTask,
     ExtractHtmlBlocksBatch,
     WarcRecordSpec,
@@ -85,7 +85,7 @@ class CommonCrawlSourceTest(unittest.TestCase):
             ),
         )
         with patch(
-            "examples._common_crawl.fetch_warc_range", return_value=payload
+            "src._common_crawl.fetch_warc_range", return_value=payload
         ):
             batches = list(
                 CommonCrawlRangeTask(
@@ -194,14 +194,19 @@ class CommonCrawlSourceTest(unittest.TestCase):
                 str(REPO_ROOT / "scripts" / "prepare_web_text_deduplication_data.py"),
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": ""},
+            env={**os.environ, "VANE_RUNNER": "local-fast"},
             text=True,
             capture_output=True,
             timeout=30,
             check=False,
         )
         self.assertEqual(completed.returncode, 2)
-        self.assertIn("--acknowledge-common-crawl-terms", completed.stderr)
+        self.assertIn(
+            "preparing Common Crawl data requires "
+            "--acknowledge-common-crawl-terms; review "
+            "https://commoncrawl.org/terms-of-use and the source-site rights",
+            completed.stderr,
+        )
 
 
 if __name__ == "__main__":

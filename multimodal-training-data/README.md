@@ -1,5 +1,7 @@
 # Multimodal Training Data Release with Vane
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Build a typed release table from document, text, image, and audio assets with
 Vane Relations and Python batch UDFs. Each modality runs in its own typed branch;
 the branches are combined with `union` before Relation filters, aggregations,
@@ -27,7 +29,7 @@ Python 3.10 or newer is required. From this directory:
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python examples/multimodal_training_data.py
+VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py
 ```
 
 The default run writes Parquet, CSV, and JSON artifacts under
@@ -37,7 +39,7 @@ and reject one low-resolution validation image.
 Run the focused test suite with:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests \
+VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
   -p 'test_multimodal_training_data.py' -v
 ```
 
@@ -78,9 +80,10 @@ execution backends, output contract, parser scope, and source metadata.
 multimodal-training-data/
 ├── data/multimodal_training_data/   # manifests and pinned public assets
 ├── docs/                            # English and Chinese tutorials
-├── examples/                        # executable Vane pipeline
+├── src/                             # executable Vane pipeline
 ├── scripts/                         # public snapshot preparation
 ├── tests/                           # contract and end-to-end tests
 ├── README.md
+├── README.zh-CN.md
 └── requirements.txt
 ```

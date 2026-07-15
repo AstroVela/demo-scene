@@ -19,13 +19,13 @@ from typing import Any, Callable
 import pyarrow as pa
 import vane
 
-EXAMPLE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = EXAMPLE_DIR.parent
-for import_path in (REPO_ROOT, EXAMPLE_DIR):
+SOURCE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SOURCE_DIR.parent
+for import_path in (REPO_ROOT, SOURCE_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 existing_pythonpath = os.environ.get("PYTHONPATH")
-pythonpath_entries = [str(REPO_ROOT), str(EXAMPLE_DIR)]
+pythonpath_entries = [str(REPO_ROOT), str(SOURCE_DIR)]
 if existing_pythonpath:
     paths = existing_pythonpath.split(os.pathsep)
     missing_paths = [path for path in pythonpath_entries if path not in paths]
@@ -53,7 +53,7 @@ SYNTHETIC_INPUT = DATA_DIR / "synthetic_training_assets.csv"
 PUBLIC_SOURCE_MANIFEST = DATA_DIR / "public_sources.csv"
 PUBLIC_SNAPSHOT_METADATA = DATA_DIR / "public_snapshot.json"
 DEFAULT_OUTPUT_DIR = Path("output/multimodal_training_data")
-MODULE_NAME = "examples.multimodal_training_data"
+MODULE_NAME = "src.multimodal_training_data"
 FEATURE_SCHEMA_VERSION = 2
 SUPPORTED_MODALITIES = ("audio", "document", "image", "text")
 MEDIA_METRICS_TYPE = pa.struct(

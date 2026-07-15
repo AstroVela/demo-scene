@@ -44,7 +44,7 @@ from pathlib import Path
 
 import vane
 
-from examples.enterprise_multimodal_agent import (
+from src.enterprise_multimodal_agent import (
     DEFAULT_ASSET_CATALOG,
     DEFAULT_INPUT_DIR,
     materialize_sources,
@@ -216,7 +216,7 @@ status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
 默认运行：
 
 ~~~bash
-.venv/bin/python examples/enterprise_multimodal_agent.py
+VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
 ~~~
 
 输出：
@@ -237,14 +237,14 @@ Output directory: output/enterprise_multimodal_agent
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
-自定义场景使用 `--input-dir`，自定义资产清单使用 `--asset-catalog`。`--execution-backend` 可以固定为 `subprocess_task` 或 `ray_task`；当前 Relation SQL 仍要求 `native` runner。
+自定义场景使用 `--input-dir`，自定义资产清单使用 `--asset-catalog`。`--execution-backend` 可以固定为 `subprocess_task` 或 `ray_task`；Relation SQL 中的命名表位于客户端连接，因此必须使用 `local-fast` runner。
 
 默认运行中，只要场景 CSV、资产清单、来源清单或文件与固定快照不一致，脚本就会在处理前失败。`manifest.json` 对默认输入使用仓库相对路径。自定义输入仍会执行语义完整性检查，但标记为 `custom_inputs`，不视为已通过固定快照验证。
 
 聚焦测试：
 
 ~~~bash
-.venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
 ~~~
 
 ## 示例边界

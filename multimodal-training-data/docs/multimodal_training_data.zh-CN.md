@@ -33,7 +33,7 @@ from pathlib import Path
 
 import vane
 
-from examples.multimodal_training_data import (
+from src.multimodal_training_data import (
     SUPPORTED_MODALITIES,
     TRAINING_FEATURE_SCHEMA,
     importable_batch_function,
@@ -349,7 +349,7 @@ Parquet 保留 `risk_flags` 列表和 `media_metrics` 结构体。拒绝记录�
 教程中的 Relation 和 Batch UDF 阶段都包含在同一个可执行脚本中：
 
 ```bash
-.venv/bin/python examples/multimodal_training_data.py
+VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py
 ```
 
 默认运行输出：
@@ -364,24 +364,24 @@ Output directory: output/multimodal_training_data
 需要复现原来的纯合成错误样本时运行：
 
 ```bash
-.venv/bin/python examples/multimodal_training_data.py \
+VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py \
   --input data/multimodal_training_data/synthetic_training_assets.csv
 ```
 
-使用 `--input` 可以替换资产清单，`--batch-size` 控制各模态 UDF 的输入批次，`--execution-backend` 可以显式选择 `subprocess_task` 或 `ray_task`，`--output-dir` 用于修改产物目录。脚本当前需要 `native` Relation runner；task 执行后端只影响四条 Python UDF 分支。
+使用 `--input` 可以替换资产清单，`--batch-size` 控制各模态 UDF 的输入批次，`--execution-backend` 可以显式选择 `subprocess_task` 或 `ray_task`，`--output-dir` 用于修改产物目录。脚本中的命名表位于客户端连接，因此必须使用 `local-fast` Relation runner；task 执行后端只影响四条 Python UDF 分支。
 
 三条命令对应不同目的：
 
 | 命令 | 是否联网 | 用途 |
 | --- | --- | --- |
-| `examples/multimodal_training_data.py` | 否 | 默认公开快照的数据处理与发布 |
-| `scripts/prepare_multimodal_training_data.py --refresh` | 是 | 重新下载来源并验证哈希 |
-| `examples/multimodal_training_data.py --input .../synthetic_training_assets.csv` | 否 | 回归无效图片和缺少授权等错误路径 |
+| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py` | 否 | 默认公开快照的数据处理与发布 |
+| `.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh` | 是 | 重新下载来源并验证哈希 |
+| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | 否 | 回归无效图片和缺少授权等错误路径 |
 
 聚焦验证：
 
 ```bash
-.venv/bin/python -m unittest -v tests.test_multimodal_training_data
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_multimodal_training_data
 ```
 
 ## 当前范围

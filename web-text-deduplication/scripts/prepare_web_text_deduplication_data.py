@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples._common import (  # noqa: E402
+from src._common import (  # noqa: E402
     PUBLIC_BACKEND_CHOICES,
     backend_metadata_entry,
     batch_udf_options,
@@ -26,7 +26,7 @@ from examples._common import (  # noqa: E402
     require_local_relation_runner,
     write_json,
 )
-from examples._common_crawl import (  # noqa: E402
+from src._common_crawl import (  # noqa: E402
     BLOCK_SCHEMA,
     ExtractHtmlBlocksBatch,
     HTML_BLOCK_SELECTOR,
@@ -191,7 +191,7 @@ def run(args: argparse.Namespace) -> None:
             "html_parser_version": importlib.metadata.version("selectolax"),
             "html_block_selector": HTML_BLOCK_SELECTOR,
             "generation_command": (
-                ".venv/bin/python "
+                "VANE_RUNNER=local-fast .venv/bin/python "
                 "scripts/prepare_web_text_deduplication_data.py "
                 "--refresh-index --acknowledge-common-crawl-terms"
             ),

@@ -33,7 +33,7 @@ from pathlib import Path
 
 import vane
 
-from examples.multimodal_training_data import (
+from src.multimodal_training_data import (
     SUPPORTED_MODALITIES,
     TRAINING_FEATURE_SCHEMA,
     importable_batch_function,
@@ -347,7 +347,7 @@ Parquet preserves the `risk_flags` list and `media_metrics` struct. Rejected rec
 The executable script contains every Relation and Batch UDF stage shown above:
 
 ```bash
-.venv/bin/python examples/multimodal_training_data.py
+VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py
 ```
 
 The default run prints:
@@ -362,24 +362,24 @@ Output directory: output/multimodal_training_data
 Run the preserved synthetic error fixture with:
 
 ```bash
-.venv/bin/python examples/multimodal_training_data.py \
+VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py \
   --input data/multimodal_training_data/synthetic_training_assets.csv
 ```
 
-Use `--input` to replace the manifest, `--batch-size` to control input batches for each modality UDF, `--execution-backend` to select `subprocess_task` or `ray_task`, and `--output-dir` to change the artifact directory. The script currently requires a native relation runner; task backends affect only the four Python UDF branches.
+Use `--input` to replace the manifest, `--batch-size` to control input batches for each modality UDF, `--execution-backend` to select `subprocess_task` or `ray_task`, and `--output-dir` to change the artifact directory. The script requires the `local-fast` relation runner because its named tables live in the client connection; task backends affect only the four Python UDF branches.
 
 The three commands have different purposes:
 
 | Command | Network | Purpose |
 | --- | --- | --- |
-| `examples/multimodal_training_data.py` | No | Process and release the default public snapshot |
-| `scripts/prepare_multimodal_training_data.py --refresh` | Yes | Re-download sources and verify hashes |
-| `examples/multimodal_training_data.py --input .../synthetic_training_assets.csv` | No | Regress invalid-image and missing-license paths |
+| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py` | No | Process and release the default public snapshot |
+| `.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh` | Yes | Re-download sources and verify hashes |
+| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | No | Regress invalid-image and missing-license paths |
 
 Run the focused checks with:
 
 ```bash
-.venv/bin/python -m unittest -v tests.test_multimodal_training_data
+VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_multimodal_training_data
 ```
 
 ## Current scope

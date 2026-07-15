@@ -13,7 +13,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from examples.web_text_deduplication import (
+from src._common import require_local_relation_runner
+from src.web_text_deduplication import (
     DEFAULT_INPUT,
     DEFAULT_SNAPSHOT_METADATA,
     LSH_BANDS,
@@ -40,19 +41,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class WebTextDeduplicationTest(unittest.TestCase):
+    def test_relation_runner_requires_local_fast(self) -> None:
+        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
+        for runner in ("", "local", "ray"):
+            with self.subTest(runner=runner):
+                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
+                    require_local_relation_runner(runner)
+
     def invoke_example(
         self, output_dir: Path, *extra_args: str
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
-                str(REPO_ROOT / "examples" / "web_text_deduplication.py"),
+                str(REPO_ROOT / "src" / "web_text_deduplication.py"),
                 "--output-dir",
                 str(output_dir),
                 *extra_args,
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": ""},
+            env={**os.environ, "VANE_RUNNER": "local-fast"},
             text=True,
             capture_output=True,
             timeout=90,
@@ -144,7 +152,7 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 snapshot_verification["third_party_crawled_content"]
             )
             self.assertEqual(snapshot_verification["license_id"], "Apache-2.0")
-            self.assertEqual(manifest["runner"], "native")
+            self.assertEqual(manifest["runner"], "local-fast")
             self.assertIsNone(manifest["execution_backend"])
 
             with (output_dir / "duplicate_pairs.csv").open(
@@ -300,7 +308,9 @@ class WebTextDeduplicationTest(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 2)
             self.assertIn(
-                "--acknowledge-common-crawl-terms",
+                "--source common-crawl requires "
+                "--acknowledge-common-crawl-terms; review "
+                "https://commoncrawl.org/terms-of-use and the source-site rights",
                 completed.stderr,
             )
 
@@ -651,7 +661,7 @@ class WebTextDeduplicationTest(unittest.TestCase):
 
     def test_script_and_docs_keep_the_global_relation_algorithm_boundary(self) -> None:
         paths = [
-            REPO_ROOT / "examples" / "web_text_deduplication.py",
+            REPO_ROOT / "src" / "web_text_deduplication.py",
             REPO_ROOT / "docs" / "web_text_deduplication.en.md",
             REPO_ROOT / "docs" / "web_text_deduplication.zh-CN.md",
         ]
@@ -676,6 +686,15 @@ class WebTextDeduplicationTest(unittest.TestCase):
             self.assertIn(".write_parquet(", text, msg=str(path))
             self.assertNotIn('conn.register("documents"', text, msg=str(path))
             self.assertNotIn("product_area", text, msg=str(path))
+
+    def test_readmes_link_languages_and_current_entrypoint(self) -> None:
+        english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (REPO_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        self.assertIn("[简体中文](README.zh-CN.md)", english)
+        self.assertIn("[English](README.md)", chinese)
+        for text in (english, chinese):
+            self.assertIn("src/web_text_deduplication.py", text)
+            self.assertNotIn("examples/web_text_deduplication.py", text)
 
 
 if __name__ == "__main__":

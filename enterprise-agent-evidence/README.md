@@ -1,5 +1,7 @@
 # Enterprise Agent Evidence Governance with Vane
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Build auditable multimodal context before evidence reaches an enterprise Agent.
 The pipeline parses document, text, image, and audio assets, joins them to
 business requirements, and uses SQL to find missing evidence, conflicting
@@ -27,7 +29,7 @@ Python 3.10 or newer is required. From this directory:
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python examples/enterprise_multimodal_agent.py
+VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
 ```
 
 Expected summary:
@@ -45,7 +47,7 @@ Output directory: output/enterprise_multimodal_agent
 Run the focused tests with:
 
 ```bash
-.venv/bin/python -m unittest discover -s tests \
+VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
   -p 'test_enterprise_multimodal_agent.py' -v
 ```
 
@@ -106,9 +108,10 @@ payload fails verification instead of silently replacing the snapshot.
 enterprise-agent-evidence/
 ├── data/enterprise_multimodal_agent/  # pinned scenarios and public assets
 ├── docs/                              # English and Chinese tutorials
-├── examples/                          # governance pipeline and media helper
+├── src/                               # governance pipeline and media helper
 ├── scripts/                           # public snapshot preparation
 ├── tests/                             # focused contract and failure tests
 ├── README.md
+├── README.zh-CN.md
 └── requirements.txt
 ```

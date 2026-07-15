@@ -15,13 +15,13 @@ from typing import Any, Callable
 import pyarrow as pa
 import vane
 
-EXAMPLE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = EXAMPLE_DIR.parent
-for import_path in (REPO_ROOT, EXAMPLE_DIR):
+SOURCE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SOURCE_DIR.parent
+for import_path in (REPO_ROOT, SOURCE_DIR):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 existing_pythonpath = os.environ.get("PYTHONPATH")
-pythonpath_entries = [str(REPO_ROOT), str(EXAMPLE_DIR)]
+pythonpath_entries = [str(REPO_ROOT), str(SOURCE_DIR)]
 if existing_pythonpath:
     paths = existing_pythonpath.split(os.pathsep)
     missing_paths = [path for path in pythonpath_entries if path not in paths]
@@ -58,7 +58,7 @@ DEFAULT_SCENARIO_SNAPSHOT = DEFAULT_INPUT_DIR / "scenario_snapshot.json"
 DEFAULT_ASSET_CATALOG = DEFAULT_INPUT_DIR / "asset_catalog.csv"
 ASSET_SNAPSHOT_METADATA = DEFAULT_INPUT_DIR / "asset_snapshot.json"
 DEFAULT_OUTPUT_DIR = Path("output/enterprise_multimodal_agent")
-MODULE_NAME = "examples.enterprise_multimodal_agent"
+MODULE_NAME = "src.enterprise_multimodal_agent"
 FRESHNESS_DAYS = 30
 SCENARIO_SCHEMA_VERSION = 1
 OUTPUT_SCHEMA_VERSION = 1
