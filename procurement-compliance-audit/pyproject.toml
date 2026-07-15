@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "procurement-compliance-audit-demo"
+version = "0.1.0"
+description = "Focused Vane SQL demo for procurement expert-score auditing"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "onnxruntime>=1.21,<2",
+  "openai==2.45.0",
+  "pillow>=12,<13",
+  "pyarrow>=18,<22",
+  "pyyaml>=6,<7",
+  "rapidocr>=3,<4",
+  "vane-ai==0.1.0.dev20260714234347",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+procurement_audit_sql_demo = [
+  "sql/staging/*.sql",
+  "sql/intermediate/*.sql",
+  "sql/marts/*.sql",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

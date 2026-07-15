@@ -1,0 +1,14 @@
+Damaged vehicle fixture asset attribution
+
+File: damaged_vehicle.jpg
+Source title: 2009 Nissan Versa, Front Left, 04-02-2021
+Source page: https://commons.wikimedia.org/wiki/File:2009_Nissan_Versa,_Front_Left,_04-02-2021.jpg
+Author: SsmIntrigue
+Original work: The source page identifies the photograph as the author's own work.
+License: Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+License URL: https://creativecommons.org/licenses/by-sa/4.0/
+Fixture copy: This is the downloaded original JPEG. No modifications were made.
+Integrity: 732664e7e1ef22f230a9406bfa4d7e436dbcfa5b44051f6205e0c9325e22b738
+
+The fixture reads this packaged asset locally. No network access is needed at
+fixture runtime.

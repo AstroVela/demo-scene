@@ -1,0 +1,40 @@
+{
+  "project_id": "PRJ-2026-001",
+  "title": "智能产线升级项目",
+  "original_winner_supplier_id": "SUP-JW-001",
+  "suppliers": [
+    {
+      "supplier_id": "SUP-JW-001",
+      "name": "景维自动化有限公司",
+      "aliases": ["景维自动化", "景维"]
+    },
+    {
+      "supplier_id": "SUP-ZJ-002",
+      "name": "中竞智能装备有限公司",
+      "aliases": ["中竞智能装备", "中竞智能"]
+    },
+    {
+      "supplier_id": "SUP-HY-003",
+      "name": "华远工业系统有限公司",
+      "aliases": ["华远工业系统", "华远工业"]
+    }
+  ],
+  "evidence_files": [
+    {
+      "file_id": "EVD-REC-001",
+      "role": "expert_recommendation",
+      "local_path": "expert_recommendation.png",
+      "media_type": "image/png"
+    },
+    {
+      "file_id": "EVD-MIN-001",
+      "role": "committee_minutes",
+      "local_path": "committee_minutes.png",
+      "media_type": "image/png"
+    }
+  ],
+  "thresholds": {
+    "score_bias_points": 15.0,
+    "ai_min_confidence": 0.75
+  }
+}

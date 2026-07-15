@@ -1,0 +1,14 @@
+Clean vehicle fixture asset provenance
+
+File: clean_vehicle.jpg
+Source page: https://commons.wikimedia.org/wiki/File:Moscow,_Li_Auto_L7_silver,_Apr_2026_04.jpg
+Author: Retired electrician
+License: CC0 1.0 Universal Public Domain Dedication
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+Original work: The source page identifies the photograph as the author's own work.
+Fixture copy: This 1920 x 1280 JPEG is a Wikimedia thumbnail/derivative of the
+original photograph.
+Integrity: cb31c3d2edaf239506a622ea19e135500f2ebd6d1ef832d6e5d0a9e3dd411f80
+
+The fixture reads this packaged asset locally. No network access is needed at
+fixture runtime.
