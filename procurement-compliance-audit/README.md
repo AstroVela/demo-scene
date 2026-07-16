@@ -21,8 +21,6 @@ Vane is a multi-compute engine for multimodal data: it lets score tables, docume
 
 ![Vane procurement compliance audit data flow](docs/vane-procurement-audit-data-flow.en.png)
 
-[Open the PNG](docs/vane-procurement-audit-data-flow.en.png) · [Edit the Excalidraw source](docs/vane-procurement-audit-data-flow.en.excalidraw)
-
 ```text
 PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
   -> typed score and evidence relations
@@ -32,8 +30,6 @@ PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
   -> SQL score metrics and three audit rules
   -> audit_findings + audit_summary
 ```
-
-## What the demo does
 
 1. Reads project, supplier, expert-score, and evidence-file metadata from PostgreSQL, then uses the stored `bucket/object_key` locators to read the recommendation record and committee minutes as two PNG images from MinIO.
 2. Validates the project, suppliers, the complete four-expert-by-three-supplier score matrix, evidence roles, and MinIO locators so that downstream processing receives complete, trusted source data.

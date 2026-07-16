@@ -21,8 +21,6 @@ Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片
 
 ![Vane 招采合规审计数据流程图](docs/vane-procurement-audit-data-flow.png)
 
-[打开 PNG](docs/vane-procurement-audit-data-flow.png) · [编辑 Excalidraw 源文件](docs/vane-procurement-audit-data-flow.excalidraw)
-
 ```text
 PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
   -> 类型明确的评分和证据 Relation
@@ -32,8 +30,6 @@ PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
   -> SQL 评分指标和三条审计规则
   -> audit_findings + audit_summary
 ```
-
-## Demo 做了什么
 
 1. 从 PostgreSQL 读取项目、供应商、专家评分和证据文件元数据，并根据其中的 `bucket/object_key` 从 MinIO 读取推荐记录和评审会议纪要两张 PNG 图片。
 2. 校验项目、供应商、4 位专家对 3 家供应商的完整评分矩阵，以及证据角色和 MinIO locator，确保进入后续流程的数据结构完整且来源可信。

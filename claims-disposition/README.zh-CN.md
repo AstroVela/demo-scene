@@ -23,8 +23,6 @@ Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档
 
 ![Vane 理赔多模态数据流程图](docs/vane-claims-data-flow.png)
 
-[打开 PNG](docs/vane-claims-data-flow.png) · [编辑 Excalidraw 源文件](docs/vane-claims-data-flow.excalidraw)
-
 ```text
 PostgreSQL 理赔单 + MinIO 照片/文档
   -> 对象、Hash、质量和 OCR 事实
@@ -45,10 +43,6 @@ stg_claims / stg_claim_materials / stg_run_config
   -> int_claim_decision_facts
   -> claim_disposition
 ```
-
-确定性聚合与决策规则保存在普通 DuckDB `.sql` 文件中；材料处理、AI 调用和响应校验由 Python 编排器通过 Vane Runner 执行。项目不依赖 dbt、Jinja、macro 或 `ref()`。
-
-## Demo 做了什么
 
 1. 从 PostgreSQL 读取 4 条合成理赔记录及其材料元数据，并根据材料中的 MinIO locator 读取车辆受损照片和理赔证明文档；运行时不直接读取本地 fixture 文件。
 2. 校验每份材料的文件身份、顺序、角色、媒体类型、bucket 和规范化对象路径，并检查 MinIO 对象是否存在、计算 SHA-256，避免错误或被替换的文件进入自动处理。

@@ -23,8 +23,6 @@ Vane is a multi-compute engine for multimodal data: it lets structured records, 
 
 ![Vane multimodal claims data flow](docs/vane-claims-data-flow.en.png)
 
-[Open the PNG](docs/vane-claims-data-flow.en.png) · [Edit the Excalidraw source](docs/vane-claims-data-flow.en.excalidraw)
-
 ```text
 PostgreSQL claims + MinIO photos/documents
   -> object, hash, quality, and OCR facts
@@ -45,10 +43,6 @@ stg_claims / stg_claim_materials / stg_run_config
   -> int_claim_decision_facts
   -> claim_disposition
 ```
-
-Deterministic aggregation and decision rules remain in ordinary DuckDB `.sql` files, while the Python orchestrator runs material processing, AI calls, and response validation through the Vane Runner. The pipeline has no dbt, Jinja, macro, or `ref()` dependency.
-
-## What the demo does
 
 1. Reads four synthetic claims and their material metadata from PostgreSQL, then follows the stored MinIO locators to read vehicle-damage photos and supporting claim documents; the runtime never reads local fixture files directly.
 2. Validates each material's file identity, order, role, media type, bucket, and canonical object path, then checks MinIO object existence and computes SHA-256 so that incorrect or replaced files cannot enter automated processing.
