@@ -1,4 +1,5 @@
 create or replace view stg_claims as
+-- Normalize the ordered PostgreSQL claim snapshot into typed SQL inputs.
 with source_rows as (
   select *
   from claims_runtime_claims

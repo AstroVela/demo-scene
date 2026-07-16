@@ -1,5 +1,7 @@
 create or replace table audit_summary as
+-- Roll findings into the one-row project audit summary contract.
 with finding_counts as (
+  -- Count all findings and the subset requiring high-severity attention.
   select
     project_id,
     count(*)::bigint as finding_count,
@@ -10,6 +12,7 @@ with finding_counts as (
 select
   project.project_id,
   project.title,
+  -- Distinguish insufficient evidence, review-required, and passed outcomes.
   case
     when metrics.project_id is null
       or metrics.recommendation_confidence < project.ai_min_confidence

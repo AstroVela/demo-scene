@@ -35,6 +35,8 @@ def validate_fixture_rows(
     rows: Sequence[Mapping],
     expected: Mapping[str, str] = EXPECTED_DISPOSITIONS,
 ) -> list[str]:
+    """Compare published rows with the four intended fixture outcomes."""
+
     errors: list[str] = []
     actual: dict[str, str] = {}
     for row in rows:

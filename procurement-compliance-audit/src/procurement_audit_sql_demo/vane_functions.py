@@ -379,6 +379,7 @@ def build_evidence_ocr_batch_actor(minio_config: MinioConfig) -> type:
 
         def __call__(self, batch: Any) -> pa.RecordBatch:
             rows = []
+            # Preserve trusted source metadata while OCR enriches each image.
             columns = {
                 name: batch.column(name).to_pylist()
                 for name in (
@@ -391,6 +392,7 @@ def build_evidence_ocr_batch_actor(minio_config: MinioConfig) -> type:
                 )
             }
             for index in range(batch.num_rows):
+                # The actor reads MinIO and returns normalized OCR JSON per file.
                 ocr_json = self.actor(
                     columns["bucket"][index],
                     columns["object_key"][index],

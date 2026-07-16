@@ -312,6 +312,7 @@ def build_photo_requests(
         pending.extend(sorted(row_photos, key=lambda item: (item.file_order, item.file_id)))
 
     verified: list[tuple[_PendingPhoto, bytes, str]] = []
+    # Re-read each MinIO object and bind the request to its staged SHA-256.
     for photo in pending:
         context = f"claim {photo.claim_id} file {photo.file_id}"
         image_bytes = _normalize_image_bytes(
@@ -443,6 +444,7 @@ def build_photo_ai_relation(
             else result_factory(table)
         )
 
+    # Probe once before constructing any Vane multimodal relation.
     probe_qwen(config.ai)
     provider_options = vane.ai.OpenAIProviderOptions(
         base_url=config.ai.base_url,
@@ -479,6 +481,7 @@ def build_photo_ai_relation(
             output_column="raw_damage_response",
             num_gpus=0,
         )
+        # Materialize through Relation.write_parquet when a Runner is configured.
         if response_materializer is None:
             response_rows = result.fetchall()
         else:

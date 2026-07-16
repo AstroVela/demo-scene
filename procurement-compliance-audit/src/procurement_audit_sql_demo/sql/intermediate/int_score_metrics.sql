@@ -1,5 +1,7 @@
 create or replace view int_score_metrics as
+-- Combine AI evidence facts with deterministic score and award-impact metrics.
 with recommendation_facts as (
+  -- Read the recommendation record and project-level audit thresholds.
   select
     facts.project_id,
     facts.file_id as recommendation_file_id,
@@ -15,6 +17,7 @@ with recommendation_facts as (
   where facts.document_type = 'recommendation_record'
 ),
 minutes_facts as (
+  -- Read participation and recusal facts from the committee minutes.
   select
     project_id,
     file_id as minutes_file_id,
@@ -26,6 +29,7 @@ minutes_facts as (
   where document_type = 'committee_minutes'
 ),
 conflict_signal as (
+  -- Join both documents on the expert identity extracted from evidence.
   select
     recommendation.project_id,
     recommendation.flagged_expert_id,
@@ -46,6 +50,7 @@ conflict_signal as (
    and minutes.expert_id = recommendation.flagged_expert_id
 ),
 matched_signal as (
+  -- Resolve the related supplier against canonical names and aliases.
   select
     signal.*,
     suppliers.supplier_id as related_supplier_id,
@@ -59,6 +64,7 @@ matched_signal as (
    )
 ),
 expert_scores as (
+  -- Capture the flagged expert's score for the related supplier.
   select
     signal.project_id,
     signal.flagged_expert_id,
@@ -71,6 +77,7 @@ expert_scores as (
    and scores.supplier_id = signal.related_supplier_id
 ),
 peer_scores as (
+  -- Compute the comparison average from all other experts.
   select
     signal.project_id,
     signal.flagged_expert_id,
@@ -84,6 +91,7 @@ peer_scores as (
   group by all
 ),
 all_supplier_averages as (
+  -- Rank suppliers using the original complete score matrix.
   select
     project_id,
     supplier_id,
@@ -101,6 +109,7 @@ all_supplier_ranks as (
   from all_supplier_averages
 ),
 without_flagged_averages as (
+  -- Recompute supplier rankings after excluding the flagged expert.
   select
     scores.project_id,
     scores.supplier_id,
@@ -121,6 +130,7 @@ without_flagged_ranks as (
   from without_flagged_averages
 )
 select
+  -- Surface score bias and whether removing the expert changes the winner.
   signal.project_id,
   signal.flagged_expert_id,
   signal.related_supplier_id,

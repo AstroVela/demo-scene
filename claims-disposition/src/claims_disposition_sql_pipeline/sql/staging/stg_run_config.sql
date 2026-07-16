@@ -1,4 +1,5 @@
 create or replace view stg_run_config as
+-- Expose only secret-free runtime settings used by deterministic SQL stages.
 select
   cast(runtime_config_version as integer) as runtime_config_version,
   cast(run_started_at as timestamptz) as run_started_at,

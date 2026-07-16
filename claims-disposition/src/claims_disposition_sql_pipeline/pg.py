@@ -57,6 +57,8 @@ create table if not exists claims_disposition_output.claim_disposition (
 
 
 def connect_postgres(config: PostgresConfig):
+    """Open a dictionary-row connection to the configured source database."""
+
     return psycopg.connect(
         config.dsn,
         connect_timeout=5,
@@ -65,11 +67,15 @@ def connect_postgres(config: PostgresConfig):
 
 
 def initialize_schemas(connection) -> None:
+    """Create the raw input and disposition output contracts."""
+
     connection.execute(RAW_DDL)
     connection.execute(OUTPUT_DDL)
 
 
 def read_claim_rows(connection, config: PostgresConfig) -> list[dict[str, Any]]:
+    """Read a deterministic snapshot of raw claims and MinIO locators."""
+
     query = sql.SQL("select * from {}.{} order by submitted_at, claim_id").format(
         sql.Identifier(config.raw_schema),
         sql.Identifier(config.raw_table),
@@ -116,5 +122,7 @@ def reset_fixture_rows(connection, rows: list[dict[str, Any]]) -> None:
 
 
 def probe_postgres(config: PostgresConfig) -> None:
+    """Check source connectivity without reading business data."""
+
     with connect_postgres(config) as connection:
         connection.execute("select 1").fetchone()

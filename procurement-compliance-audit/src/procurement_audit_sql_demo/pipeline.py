@@ -72,6 +72,8 @@ class RunnerWorkspace:
         self.counter = 0
 
     def stage_table(self, name: str, table: pa.Table) -> Path:
+        """Persist Arrow input as a Parquet scan for either Runner backend."""
+
         self.counter += 1
         path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
         pq.write_table(table, path)
@@ -83,6 +85,8 @@ class RunnerWorkspace:
         name: str,
         table: pa.Table,
     ) -> Any:
+        """Expose a staged Arrow snapshot as a Vane relation."""
+
         path = self.stage_table(name, table)
         return connection.sql(f"select * from read_parquet({_sql_literal(path)})")
 
@@ -234,6 +238,8 @@ def _create_evidence_ocr_table(
     *,
     workspace: RunnerWorkspace,
 ) -> None:
+    """Read MinIO evidence and run OCR through the active Vane Runner."""
+
     source = workspace.relation_from_table(
         connection,
         "evidence_ocr_input",
@@ -271,6 +277,8 @@ def _create_runner_conflict_facts(
     *,
     workspace: RunnerWorkspace,
 ) -> None:
+    """Validate each AI fact through Vane before trusted-role filtering."""
+
     inputs = _relation_rows(connection, "int_evidence_ai", order_by="file_id")
     roles = {
         row["file_id"]: row
@@ -330,6 +338,8 @@ def _create_runner_conflict_facts(
 
 
 def _register_inputs(connection: Any, source: SourceBundle) -> None:
+    """Register the validated PostgreSQL snapshot as SQL source tables."""
+
     register_or_replace_table(connection, "input_project", source.project)
     register_or_replace_table(connection, "input_suppliers", source.suppliers)
     register_or_replace_table(connection, "input_scores", source.scores)
@@ -349,7 +359,9 @@ def run_pipeline(
 ) -> PipelineResult:
     """Execute all eight core relations, verify the fixture, and publish JSONL."""
 
+    # The configured backend changes execution only; the relation code is shared.
     configure_runner(runner=config.runner)
+    # Fail before computation if either PostgreSQL or MinIO is unavailable.
     runtime_probe(config)
     source = source_loader(config)
     executed: list[str] = []
@@ -359,8 +371,10 @@ def run_pipeline(
         workspace = RunnerWorkspace(Path(workspace_root))
         connection = connection_factory()
         try:
+            # Register the validated PostgreSQL snapshot and Vane functions.
             _register_inputs(connection, source)
             runtime_function_attacher(connection, config)
+            # Normalize scores and OCR MinIO evidence through the active Runner.
             for relation_name, sql_path in PRE_AI_STAGES:
                 if relation_name == "int_evidence_ocr":
                     _create_evidence_ocr_table(
@@ -372,6 +386,7 @@ def run_pipeline(
                     _execute_sql_file(connection, sql_path)
                 executed.append(relation_name)
 
+            # Bind each qualified OCR record to one multimodal evidence request.
             ocr_rows = _relation_rows(
                 connection,
                 "int_evidence_ocr",
@@ -397,6 +412,7 @@ def run_pipeline(
             )
             executed.append("int_evidence_ai")
 
+            # Validate AI facts, compute score impact, and build both marts.
             for relation_name, sql_path in POST_AI_STAGES:
                 if relation_name == "int_conflict_facts":
                     _create_runner_conflict_facts(
@@ -420,6 +436,7 @@ def run_pipeline(
         finally:
             connection.close()
 
+    # Assert the fixture story before atomically replacing the JSONL outputs.
     verify_fixture_outputs(findings, summaries)
     evidence_ids = frozenset(row["file_id"] for row in source.evidence.to_pylist())
     published = output_publisher(

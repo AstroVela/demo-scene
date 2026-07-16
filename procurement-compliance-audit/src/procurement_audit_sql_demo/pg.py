@@ -14,6 +14,8 @@ from .config import PostgresConfig
 
 
 def connect_postgres(config: PostgresConfig):
+    """Open a dictionary-row connection to the configured source database."""
+
     return psycopg.connect(
         config.dsn,
         connect_timeout=5,
@@ -26,6 +28,8 @@ def _relation(schema: str, table: str) -> sql.Composed:
 
 
 def initialize_schema(connection: Any, config: PostgresConfig) -> None:
+    """Create the four raw PostgreSQL source contracts."""
+
     schema = sql.Identifier(config.raw_schema)
     project = _relation(config.raw_schema, config.project_table)
     supplier = _relation(config.raw_schema, config.supplier_table)
@@ -202,6 +206,8 @@ def read_source_rows(
     connection: Any,
     config: PostgresConfig,
 ) -> tuple[list[dict[str, Any]], ...]:
+    """Read deterministic project, supplier, score, and evidence snapshots."""
+
     return (
         _read_rows(connection, config, config.project_table, ("project_id",)),
         _read_rows(
@@ -226,5 +232,7 @@ def read_source_rows(
 
 
 def probe_postgres(config: PostgresConfig) -> None:
+    """Check source connectivity without reading business data."""
+
     with connect_postgres(config) as connection:
         connection.execute("select 1").fetchone()

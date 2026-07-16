@@ -1,7 +1,9 @@
 version: 1
+# Switch between Local and Ray without changing the relation pipeline.
 runner: local
 output_dir: output
 
+# PostgreSQL stores project, supplier, score, and evidence metadata.
 postgres:
   dsn: postgresql://vane_insight:vane_insight_dev_password@127.0.0.1:5432/vane_insight
   raw_schema: procurement_audit_raw
@@ -10,6 +12,7 @@ postgres:
   score_table: expert_scores
   evidence_table: evidence_files
 
+# MinIO stores the evidence images referenced by PostgreSQL locators.
 minio:
   endpoint: 127.0.0.1:9000
   access_key: vaneinsight
@@ -17,11 +20,13 @@ minio:
   secure: false
   bucket: procurement-compliance-audit-fixtures
 
+# OCR qualifies evidence before it is sent to the multimodal model.
 ocr:
   engine: rapidocr
   device: cpu
   minimum_confidence: 0.60
 
+# The OpenAI-compatible endpoint extracts structured compliance facts.
 ai:
   provider: openai
   base_url: http://127.0.0.1:8001/v1

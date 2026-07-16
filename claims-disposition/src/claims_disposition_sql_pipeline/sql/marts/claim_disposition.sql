@@ -1,10 +1,12 @@
 create or replace table claim_disposition as
+-- Build the publishable one-row-per-claim decision contract.
 with facts as (
   select * from int_claim_decision_facts
 )
 
 select
   facts.claim_id,
+  -- Map the prioritized rule match to its final disposition and confidence.
   case
     when facts.matches_request_more_materials then 'request_more_materials'
     when facts.matches_manual_review then 'manual_review'
@@ -21,6 +23,7 @@ select
       else 0.50
     end as decimal(4, 2)
   ) as disposition_confidence,
+  -- Select the first actionable reason in deterministic business order.
   case
     when facts.unsupported_or_invalid_material then 'model_input_unusable'
     when facts.missing_required_photo then 'missing_required_photo'
@@ -61,6 +64,7 @@ select
       then 'Proceed to payment or repair settlement workflow.'
     else 'Assign the claim to a claims adjuster.'
   end as next_action,
+  -- Preserve the material, model, and risk evidence used for the decision.
   json_object(
     'material_count', facts.material_count,
     'unsupported_material_count', facts.unsupported_material_count,

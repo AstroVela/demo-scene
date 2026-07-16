@@ -1,4 +1,5 @@
 create or replace view stg_claim_materials as
+-- Expand each claim's PostgreSQL material metadata into one row per file.
 with material_lists as (
   select
     claims.claim_id,
@@ -11,6 +12,7 @@ with material_lists as (
 ),
 
 expanded as (
+  -- Preserve the JSON array position for stable material-level processing.
   select
     claim_id,
     scenario,
@@ -23,6 +25,7 @@ expanded as (
 ),
 
 normalized as (
+  -- Extract the trusted identity, role, media type, and MinIO locator fields.
   select
     claim_id,
     scenario,
@@ -40,6 +43,7 @@ normalized as (
 ),
 
 classified as (
+  -- Limit automated processing to the two supported evidence contracts.
   select
     *,
     coalesce(
@@ -51,6 +55,7 @@ classified as (
 ),
 
 validated as (
+  -- Detect duplicate identifiers and ordering before any object-store access.
   select
     *,
     file_id is not null
@@ -64,6 +69,7 @@ validated as (
 
 select
   *,
+  -- Require canonical MinIO paths so metadata cannot redirect object reads.
   coalesce(
     supported_role_media
       and file_id is not null

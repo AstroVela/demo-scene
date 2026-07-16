@@ -30,6 +30,8 @@ def verify_fixture_outputs(
     findings: Sequence[Mapping[str, Any]],
     summaries: Sequence[Mapping[str, Any]],
 ) -> None:
+    """Assert that the published rows still express the intended demo story."""
+
     errors: list[str] = []
     if len(summaries) != 1:
         raise FixtureVerificationError(

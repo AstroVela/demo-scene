@@ -391,6 +391,7 @@ def load_fixture(
     fixture = build_fixture(fixture_dir, config.minio.bucket)
     source = fixture.source
 
+    # PostgreSQL receives validated project, supplier, score, and locator rows.
     with connect_postgres(config.postgres) as connection:
         initialize_schema(connection, config.postgres)
         reset_fixture_rows(
@@ -402,6 +403,7 @@ def load_fixture(
             evidence=source.evidence.to_pylist(),
         )
 
+    # MinIO receives the binary evidence images referenced by PostgreSQL.
     store = MinioStore(config.minio)
     store.probe()
     store.ensure_bucket(config.minio.bucket)

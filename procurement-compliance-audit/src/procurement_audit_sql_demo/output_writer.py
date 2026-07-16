@@ -106,6 +106,8 @@ def validate_findings(
     findings: Sequence[Mapping[str, Any]],
     known_evidence_ids: set[str] | frozenset[str],
 ) -> list[dict[str, Any]]:
+    """Enforce finding identities, rule values, and evidence references."""
+
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_rules: set[tuple[str, str]] = set()
@@ -185,6 +187,8 @@ def validate_summaries(
     summaries: Sequence[Mapping[str, Any]],
     findings: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Ensure the project summary is consistent with validated findings."""
+
     source = _rows(summaries, "summaries")
     if len(source) != 1:
         raise OutputContractError("summaries must contain exactly one project row")
@@ -246,6 +250,8 @@ def validate_summaries(
 
 
 def _atomic_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Write one JSONL snapshot through a synced temporary file."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:

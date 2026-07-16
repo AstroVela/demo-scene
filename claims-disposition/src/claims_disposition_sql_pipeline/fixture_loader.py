@@ -204,6 +204,8 @@ def _materials(claim_id: str, bucket: str) -> tuple[list[dict], str, str]:
 
 
 def build_fixture(bucket: str = FIXTURE_BUCKET) -> FixtureBundle:
+    """Build local seed data without using it as a pipeline runtime input."""
+
     claims: list[dict] = []
     objects: list[FixtureObject] = []
 
@@ -256,13 +258,17 @@ def build_fixture(bucket: str = FIXTURE_BUCKET) -> FixtureBundle:
 
 
 def load_fixture(config_path: Path = DEFAULT_CONFIG_PATH) -> tuple[int, int]:
+    """Refresh the PostgreSQL snapshot and MinIO objects used at runtime."""
+
     config = load_runtime_config(config_path)
     fixture = build_fixture(config.minio.bucket)
 
+    # PostgreSQL receives claim metadata and canonical MinIO locators.
     with connect_postgres(config.postgres) as connection:
         initialize_schemas(connection)
         reset_fixture_rows(connection, list(fixture.claims))
 
+    # MinIO receives the binary photos and supporting documents.
     store = MinioStore(config.minio)
     store.probe()
     store.ensure_bucket(config.minio.bucket)

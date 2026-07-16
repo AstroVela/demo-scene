@@ -65,6 +65,8 @@ class RunnerWorkspace:
         self.counter = 0
 
     def stage_table(self, name: str, table: pa.Table) -> Path:
+        """Persist Arrow input as a Parquet scan for either Runner backend."""
+
         self.counter += 1
         path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
         pq.write_table(table, path)
@@ -76,6 +78,8 @@ class RunnerWorkspace:
         name: str,
         table: pa.Table,
     ) -> Any:
+        """Expose a staged Arrow snapshot as a Vane relation."""
+
         path = self.stage_table(name, table)
         return connection.sql(f"select * from read_parquet({_sql_literal(path)})")
 
@@ -254,6 +258,8 @@ def _create_runner_claim_material_facts(
     *,
     workspace: RunnerWorkspace,
 ) -> None:
+    """Run MinIO checks, photo quality, and document OCR through Vane."""
+
     source = workspace.relation_from_table(
         connection,
         "claim_material_input",
@@ -306,6 +312,8 @@ def _create_runner_claim_damage_facts(
     *,
     workspace: RunnerWorkspace,
 ) -> None:
+    """Validate AI damage responses through Vane before SQL aggregation."""
+
     model_responses = connection.sql(
         """
         with photo_values as (
@@ -384,6 +392,8 @@ def _create_photo_ai_table(
     *,
     workspace: RunnerWorkspace,
 ) -> None:
+    """Run multimodal inference and register its typed response relation."""
+
     material_rows = _relation_rows(connection, "int_claim_material_facts")
     table = build_photo_ai_relation(
         material_rows,
@@ -409,7 +419,9 @@ def run_pipeline(
 ) -> int:
     """Execute the complete DAG and atomically publish its validated mart."""
 
+    # The configured backend changes execution only; the relation code is shared.
     vane.configure(runner=config.runner)
+    # Fail before computation if either PostgreSQL or MinIO is unavailable.
     probe_runtime(config)
     run_started_at = datetime.now(timezone.utc)
     claim_rows = read_claim_rows_with_json(config)
@@ -420,6 +432,7 @@ def run_pipeline(
         workspace = RunnerWorkspace(Path(workspace_root))
         connection = duckdb.connect()
         try:
+            # Register the PostgreSQL snapshot and secret-free run settings.
             register_or_replace_table(
                 connection,
                 "claims_runtime_claims",
@@ -431,6 +444,7 @@ def run_pipeline(
                 rows_to_arrow([build_run_config_row(config, run_started_at)]),
             )
             attach_runtime_functions(connection, config)
+            # Stage claims and enrich each material through the active Runner.
             for sql_path in SQL_STAGES:
                 if sql_path.stem == "int_claim_material_facts":
                     _create_runner_claim_material_facts(
@@ -441,11 +455,13 @@ def run_pipeline(
                     )
                     continue
                 _execute_sql_file(connection, sql_path)
+            # Bind verified MinIO photos to one multimodal request per image.
             _create_photo_ai_table(
                 connection,
                 config,
                 workspace=workspace,
             )
+            # Validate AI facts, apply deterministic rules, and build the mart.
             for sql_path in SQL_FINAL_STAGES:
                 if sql_path.stem == "int_claim_damage_facts":
                     _create_runner_claim_damage_facts(
@@ -461,6 +477,7 @@ def run_pipeline(
         finally:
             connection.close()
 
+    # Validate the output contract before replacing the PostgreSQL result table.
     return replace_output_rows(rows, config)
 
 

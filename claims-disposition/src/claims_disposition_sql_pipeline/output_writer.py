@@ -93,6 +93,8 @@ def _timestamp(value: Any, claim_id: str) -> datetime:
 
 
 def validate_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize the mart and enforce the PostgreSQL output contract."""
+
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         raise OutputContractError("output payload must be a list of rows")
     normalized: list[dict[str, Any]] = []
@@ -139,6 +141,8 @@ def replace_output_rows(
     rows: Sequence[Mapping[str, Any]],
     config: RuntimeConfig,
 ) -> int:
+    """Replace the published disposition snapshot in one transaction."""
+
     normalized = validate_rows(rows)
     postgres = config.postgres
     delete_query = sql.SQL("delete from {}.{}").format(

@@ -131,6 +131,7 @@ def source_bundle_from_rows(
 ) -> SourceBundle:
     """Validate one PostgreSQL snapshot before any OCR or model work."""
 
+    # Validate the single project and its decision thresholds.
     if len(project_rows) != 1:
         raise SourceContractError(
             f"PostgreSQL source must contain exactly one project, got {len(project_rows)}"
@@ -159,6 +160,7 @@ def source_bundle_from_rows(
         ),
     }
 
+    # Normalize suppliers and require unique names and aliases.
     if len(supplier_rows) != 3:
         raise SourceContractError("PostgreSQL source must contain exactly three suppliers")
     suppliers: list[dict[str, Any]] = []
@@ -196,6 +198,7 @@ def source_bundle_from_rows(
     if project["original_winner_supplier_id"] not in supplier_ids:
         raise SourceContractError("original_winner_supplier_id references an unknown supplier")
 
+    # Require a complete expert-by-supplier matrix with a reproducible winner.
     if len(score_rows) != 12:
         raise SourceContractError("PostgreSQL source must contain exactly twelve scores")
     scores: list[dict[str, Any]] = []
@@ -234,6 +237,7 @@ def source_bundle_from_rows(
     if _winner(scores) != project["original_winner_supplier_id"]:
         raise SourceContractError("declared original winner does not match score matrix")
 
+    # Validate the two trusted MinIO locators before OCR can read either object.
     if len(evidence_rows) != 2:
         raise SourceContractError("PostgreSQL source must contain exactly two evidence rows")
     evidence: list[dict[str, Any]] = []

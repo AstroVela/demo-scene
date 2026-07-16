@@ -697,6 +697,7 @@ def build_claim_material_batch_actor(
         def __call__(self, batch: Any) -> pa.RecordBatch:
             rows = []
             for source in batch.to_pylist():
+                # Validate the trusted locator before probing or reading MinIO.
                 runtime_locator_valid = bool(
                     source["supported_role_media"]
                     and source["material_locator_valid"]
@@ -724,6 +725,7 @@ def build_claim_material_batch_actor(
                     and source["role"] == "damage_photo"
                     and source["media_type"] == "image/jpeg"
                 ):
+                    # Convert image bytes into deterministic photo-quality facts.
                     value = self.store.get_bytes(
                         source["bucket"],
                         source["object_key"],
@@ -740,6 +742,7 @@ def build_claim_material_batch_actor(
                     and source["role"] == "supporting_document"
                     and source["media_type"] == "image/png"
                 ):
+                    # OCR the document and validate the required claim fields.
                     document_ocr_json = self.ocr_actor(
                         source["bucket"],
                         source["object_key"],
@@ -863,6 +866,7 @@ def build_damage_validation_batch() -> Any:
     def validate_batch(batch: Any) -> pa.RecordBatch:
         rows = []
         for source in batch.to_pylist():
+            # Normalize untrusted model JSON before deriving rule-ready flags.
             damage_result_json = validate_response(
                 source.get("raw_damage_response") or "",
                 source["claim_id"],
@@ -893,6 +897,7 @@ def build_damage_validation_batch() -> Any:
             target_vehicle_clear = payload.get("target_vehicle_clear")
             damage_visible = payload.get("damage_visible")
             severity_hint = payload.get("severity_hint")
+            # Only determinate, high-confidence results can drive auto decisions.
             successful = (
                 model_status == "success"
                 and finding_determinate is True

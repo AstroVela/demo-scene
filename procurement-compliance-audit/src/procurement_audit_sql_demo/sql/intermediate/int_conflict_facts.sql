@@ -1,4 +1,6 @@
 create or replace view int_conflict_facts as
+-- Normalize untrusted AI JSON and bind it back to trusted evidence metadata.
+-- The orchestrator materializes validation through Vane before this role filter.
 with validated as materialized (
   select
     evidence.project_id,
@@ -11,6 +13,7 @@ with validated as materialized (
    and evidence.file_id = ai.file_id
 )
 select
+  -- Expose typed compliance facts only when role and document type agree.
   project_id,
   file_id,
   role,

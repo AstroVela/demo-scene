@@ -1,4 +1,5 @@
 create or replace view stg_evidence_images as
+-- Select the PostgreSQL MinIO locators supported by the OCR pipeline.
 select
   cast(evidence.project_id as varchar) as project_id,
   cast(evidence.file_id as varchar) as file_id,

@@ -217,6 +217,7 @@ def build_evidence_ai_requests(
                 f"MinIO evidence object {file_id} must be bytes-like"
             )
         image_bytes = bytes(value)
+        # Bind trusted PostgreSQL metadata and MinIO bytes to one request row.
         pending.append(
             (
                 evidence_order[file_id],
@@ -355,6 +356,7 @@ def build_evidence_ai_relation(
     completed: list[tuple[EvidenceAiRequest, str]] = []
     for request in requests:
         current_request = request
+        # Retry once with a stricter prompt when the response contract fails.
         for attempt in range(2):
             request_table = _request_table(current_request)
             relation = (
@@ -374,6 +376,7 @@ def build_evidence_ai_relation(
                 output_column="raw_response",
                 num_gpus=0,
             )
+            # Materialize through Relation.write_parquet when a Runner is configured.
             if response_materializer is None:
                 response_rows = result.fetchall()
             else:

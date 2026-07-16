@@ -1,4 +1,5 @@
 create or replace table audit_findings as
+-- Emit publishable findings only from sufficiently confident, consistent evidence.
 with eligible as (
   select *
   from int_score_metrics
@@ -7,6 +8,7 @@ with eligible as (
     and computed_original_winner_supplier_id = declared_original_winner_supplier_id
 ),
 findings as (
+  -- EXP-001: the related expert participated without recusing.
   select
     project_id || ':EXP-001-conflict-not-recused' as finding_id,
     project_id,
@@ -30,6 +32,7 @@ findings as (
 
   union all
 
+  -- EXP-002: the related expert's score exceeds the peer bias threshold.
   select
     project_id || ':EXP-002-score-bias' as finding_id,
     project_id,
@@ -54,6 +57,7 @@ findings as (
 
   union all
 
+  -- EXP-003: removing the related expert changes the award winner.
   select
     project_id || ':EXP-003-award-impact' as finding_id,
     project_id,

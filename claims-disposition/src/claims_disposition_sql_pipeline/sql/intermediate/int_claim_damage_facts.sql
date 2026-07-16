@@ -1,9 +1,12 @@
 create or replace view int_claim_damage_facts as
+-- Define the AI-response contract shared by Local and Ray execution.
+-- The orchestrator validates per-photo responses through Vane before aggregation.
 with material_facts as (
   select * from int_claim_material_facts
 ),
 
 photo_values as (
+  -- Expand the ordered, verified photo inputs prepared by material processing.
   select
     material_facts.claim_id,
     unnest(json_extract(material_facts.usable_photo_inputs_json, '$[*]')) as photo_json
@@ -27,6 +30,7 @@ ai_responses as (
 ),
 
 model_responses as (
+  -- Bind each model response to its claim, file identity, and content hash.
   select
     model_inputs.*,
     ai_responses.raw_damage_response
@@ -38,6 +42,7 @@ model_responses as (
 ),
 
 parsed_responses as (
+  -- Normalize untrusted model output into the strict damage-result schema.
   select
     *,
     photo_damage_result_json(
@@ -50,6 +55,7 @@ parsed_responses as (
 ),
 
 per_photo_damage_facts as (
+  -- Extract typed evidence fields used by deterministic decision rules.
   select
     claim_id,
     file_id,
@@ -97,6 +103,7 @@ classified_photo_inputs as (
 ),
 
 classified_photo_results as (
+  -- Accept only determinate, high-confidence positive or negative findings.
   select
     *,
     model_status = 'success'
@@ -123,6 +130,7 @@ classified_photo_results as (
 ),
 
 aggregated_damage_facts as (
+  -- Combine all photo findings and surface inconsistency or risk signals.
   select
     claim_id,
     count(*) as model_result_count,
@@ -215,6 +223,7 @@ aggregated_damage_facts as (
 )
 
 select
+  -- Preserve claims with no model run while joining any available AI facts.
   material_facts.*,
   aggregated_damage_facts.damage_result_json,
   case

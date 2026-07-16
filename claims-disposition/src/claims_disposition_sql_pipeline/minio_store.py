@@ -12,6 +12,8 @@ from .config import MinioConfig
 
 
 class MinioStore:
+    """Provide the object operations used by probes, OCR, and AI inputs."""
+
     def __init__(self, config: MinioConfig):
         self.client = Minio(
             config.endpoint,
@@ -37,6 +39,8 @@ class MinioStore:
             raise
 
     def get_bytes(self, bucket: str, object_key: str) -> bytes:
+        """Read one source object and always release the HTTP connection."""
+
         response = self.client.get_object(bucket, object_key)
         try:
             return response.read()

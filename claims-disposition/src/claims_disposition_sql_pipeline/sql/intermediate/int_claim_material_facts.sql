@@ -1,4 +1,6 @@
 create or replace view int_claim_material_facts as
+-- Define the material-enrichment contract shared by Local and Ray execution.
+-- The orchestrator runs row-level enrichment through Vane, then reuses the aggregate below.
 with claims as (
   select * from stg_claims
 ),
@@ -12,6 +14,7 @@ run_config as (
 ),
 
 object_input_facts as (
+  -- Validate supported roles and the configured MinIO bucket before object reads.
   select
     materials.*,
     run_config.minio_bucket,
@@ -22,6 +25,7 @@ object_input_facts as (
 ),
 
 object_probe_inputs as (
+  -- Restrict MinIO existence and hash probes to trusted locators.
   select
     claim_id,
     material_index,
@@ -74,6 +78,7 @@ hash_facts as (
 ),
 
 photo_quality_inputs as (
+  -- Select available JPEG damage photos for deterministic quality analysis.
   select
     claim_id,
     material_index,
@@ -94,6 +99,7 @@ photo_quality_results as (
 ),
 
 document_ocr_inputs as (
+  -- Select available PNG supporting documents for OCR.
   select
     claim_id,
     material_index,
@@ -124,6 +130,7 @@ quality_facts as (
 ),
 
 document_field_inputs as (
+  -- Convert OCR output into the claim fields required by the rules.
   select
     claim_id,
     material_index,
@@ -149,6 +156,7 @@ document_field_facts as (
 ),
 
 document_quality_inputs as (
+  -- Check extracted fields and OCR confidence against runtime requirements.
   select
     document_field_facts.claim_id,
     document_field_facts.material_index,
@@ -186,6 +194,7 @@ document_quality_facts as (
 ),
 
 row_facts as (
+  -- Convert enrichment JSON into typed, rule-ready material flags.
   select
     *,
     coalesce(
@@ -204,6 +213,7 @@ row_facts as (
 ),
 
 aggregated as (
+  -- Collapse file-level facts into one claim row and build ordered AI photo inputs.
   select
     claims.claim_id,
     claims.scenario,
@@ -360,6 +370,7 @@ aggregated as (
 
 select
   *,
+  -- Gate multimodal inference on a complete and usable material packet.
   required_photo_count > 0 and required_document_count > 0
     as required_materials_present,
   unsupported_material_count = 0

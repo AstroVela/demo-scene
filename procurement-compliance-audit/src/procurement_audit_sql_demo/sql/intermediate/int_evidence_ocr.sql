@@ -1,4 +1,6 @@
 create or replace table int_evidence_ocr as
+-- Define the normalized OCR output contract for every evidence image.
+-- The orchestrator runs this enrichment as a Vane batch relation on Local or Ray.
 with ocr_results as materialized (
   select
     project_id,
@@ -11,6 +13,7 @@ with ocr_results as materialized (
   from stg_evidence_images
 )
 select
+  -- Extract typed OCR fields while retaining the full response for traceability.
   project_id,
   file_id,
   role,

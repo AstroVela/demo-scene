@@ -1,9 +1,11 @@
 create or replace view int_claim_decision_facts as
+-- Convert material and AI facts into deterministic disposition rule signals.
 with damage_facts as (
   select * from int_claim_damage_facts
 ),
 
 rule_signals as (
+  -- Derive individual completeness, quality, model, and risk conditions.
   select
     *,
     unsupported_material_count > 0 or invalid_material_count > 0
@@ -35,6 +37,7 @@ rule_signals as (
 ),
 
 candidate_rules as (
+  -- Group signals into the four possible disposition candidates.
   select
     *,
     (
@@ -82,6 +85,7 @@ candidate_rules as (
 ),
 
 priority_rules as (
+  -- Apply precedence: request materials, then manual review, then deny or approve.
   select
     *,
     request_materials_candidate as matches_request_more_materials,
@@ -95,6 +99,7 @@ priority_rules as (
 
 select
   *,
+  -- Emit mutually exclusive terminal matches and audit-friendly counters.
   not matches_request_more_materials
     and not matches_manual_review
     and deny_candidate as matches_deny_claim,

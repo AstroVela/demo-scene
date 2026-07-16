@@ -1,6 +1,8 @@
 version: 1
+# Switch between Local and Ray without changing the relation pipeline.
 runner: local
 
+# PostgreSQL stores the raw claim snapshot and the published decisions.
 postgres:
   dsn: postgresql://vane_insight:vane_insight_dev_password@127.0.0.1:5432/vane_insight
   raw_schema: claims_disposition_raw
@@ -8,6 +10,7 @@ postgres:
   output_schema: claims_disposition_output
   output_table: claim_disposition
 
+# MinIO stores the photos and supporting documents referenced by PostgreSQL.
 minio:
   endpoint: 127.0.0.1:9000
   access_key: vaneinsight
@@ -15,12 +18,14 @@ minio:
   secure: false
   bucket: claims-disposition-fixtures
 
+# OCR produces deterministic document and image-quality facts.
 ocr:
   engine: rapidocr
   device: cpu
   required_fields: [claim_number, claimant_name, loss_date]
   minimum_text_confidence: 0.70
 
+# The OpenAI-compatible endpoint performs multimodal damage assessment.
 ai:
   provider: openai
   base_url: http://127.0.0.1:8001/v1

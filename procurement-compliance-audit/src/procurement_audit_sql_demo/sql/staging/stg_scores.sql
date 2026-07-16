@@ -1,4 +1,5 @@
 create or replace view stg_scores as
+-- Normalize PostgreSQL scores and attach canonical supplier metadata.
 select
   cast(scores.project_id as varchar) as project_id,
   cast(scores.expert_id as varchar) as expert_id,
