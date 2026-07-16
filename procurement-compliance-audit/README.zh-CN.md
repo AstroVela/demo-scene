@@ -33,28 +33,14 @@ PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
   -> audit_findings + audit_summary
 ```
 
-## Demo 分析什么
+## Demo 做了什么
 
-| 输入 | Grain | 用途 |
-| --- | --- | --- |
-| PostgreSQL `projects` / `suppliers` | 一个项目 / project × supplier | 项目、供应商、原 winner 和规则阈值 |
-| PostgreSQL `expert_scores` | expert × supplier，共 12 行 | 4 位专家对 3 家供应商的评分 |
-| PostgreSQL `evidence_files` | 一份证据一行 | 可信 role 与 MinIO `bucket/object_key` locator |
-| MinIO 2 个 PNG 对象 | 一份图片证据一个对象 | 推荐记录与评审会议纪要的原始材料字节 |
-
-核心 Relation 如下：
-
-```text
-stg_scores / stg_evidence_images
-  -> int_evidence_ocr
-  -> int_evidence_ai
-  -> int_conflict_facts
-  -> int_score_metrics
-  -> audit_findings
-  -> audit_summary
-```
-
-所有姓名、企业和文档均为合成素材。Fixture 被设计为：`EXP-001` 给景维的评分比其他专家平均分高 18 分，剔除该专家后 winner 改变。
+1. 从 PostgreSQL 读取项目、供应商、专家评分和证据文件元数据，并根据其中的 `bucket/object_key` 从 MinIO 读取推荐记录和评审会议纪要两张 PNG 图片。
+2. 校验项目、供应商、4 位专家对 3 家供应商的完整评分矩阵，以及证据角色和 MinIO locator，确保进入后续流程的数据结构完整且来源可信。
+3. 通过 Vane Runner 执行 RapidOCR，提取图片文字、OCR 状态和置信度；只有满足质量要求的证据才会进入多模态分析。
+4. 将图片、OCR 文本和供应商上下文发送给 Qwen，提取“专家推荐了哪家供应商、是否参加评审、是否回避、对应证据原文和置信度”等结构化事实，并通过严格的 JSON 合同和证据角色进行校验。
+5. 使用确定性 SQL 对比相关专家评分与其他专家平均分，并分别计算包含和剔除该专家时的供应商排名，生成“存在关联且未回避”“评分显著偏高”“剔除该专家后中标结果改变”三类审计发现。
+6. 最终生成 `audit_findings.jsonl` 和 `audit_summary.jsonl`；证据充分时给出 `review_required` 及可复核的指标、阈值和证据引用，证据不足时明确标记为 `insufficient_evidence`，而不是让模型直接作出违规结论。
 
 ## 运行 Demo
 
@@ -71,14 +57,106 @@ output/audit_findings.jsonl  # 3 行
 output/audit_summary.jsonl   # 1 行
 ```
 
-## Vane 在哪里使用
+## 实现文件组织与 Vane 使用位置
 
-| 需求 | Vane 落地方式 |
-| --- | --- |
-| 在多张图片之间复用已经初始化的 OCR 引擎 | 使用 `@vane.cls` 声明有状态 Actor |
-| 将图片字节和 OCR 上下文发送给 Qwen | 通过 `vane.ai.prompt` 调用多模态 AI Function |
-| 约束模型到规则层之间的 JSON 边界 | 使用 `@vane.func` 声明无状态 UDF 并挂载到 SQL |
-| 计算评分偏差、重新排名并生成 finding | 使用 Relation 和确定性 DuckDB SQL |
+```text
+procurement-compliance-audit/
+├── runtime.yml
+│   # 配置 Vane Runner（local/ray）、PostgreSQL、MinIO、OCR、
+│   # Qwen 和 JSONL 输出目录。
+│
+├── scripts/
+│   └── run_demo.py
+│       # Demo 统一入口；校验 Python、Vane、DuckDB 版本后调用 CLI。
+│
+├── fixtures/expert-score-anomaly/
+│   ├── project.json
+│   ├── expert_scores.csv
+│   ├── expert_recommendation.png
+│   └── committee_minutes.png
+│       # 本地合成 seed 数据，只用于初始化 PostgreSQL 和 MinIO；
+│       # Pipeline 运行时不直接读取这些文件。
+│
+├── queries.sql
+│   # 用于查看 OCR、AI 事实、评分指标、Finding 和 Summary 等核心 Relation。
+│
+├── src/procurement_audit_sql_demo/
+│   ├── cli.py
+│   │   # 编排 fixture、run 和 e2e 命令，并展示审计结果和排名变化。
+│   │
+│   ├── config.py
+│   │   # 读取并严格校验 runtime.yml，生成类型明确的运行配置。
+│   │
+│   ├── fixture_loader.py
+│   │   # 校验本地 seed 数据，将业务记录写入 PostgreSQL，
+│   │   # 将推荐记录和会议纪要图片写入 MinIO。
+│   │
+│   ├── pg.py
+│   │   # 定义项目、供应商、专家评分和证据 locator 四张原始表，
+│   │   # 并按稳定顺序读取完整业务快照。
+│   │
+│   ├── minio_store.py
+│   │   # 封装 MinIO 图片读取、上传、Bucket 初始化和 Fixture 清理。
+│   │
+│   ├── source_data.py
+│   │   # 校验项目、供应商、4×3 评分矩阵和证据 locator，
+│   │   # 再转换为类型明确的 Arrow SourceBundle。
+│   │
+│   ├── pipeline.py
+│   │   # 整条八节点 DAG 的主编排器：读取来源、执行 OCR 和 AI、
+│   │   # 运行评分 SQL、生成两个 Mart，并发布最终 JSONL。
+│   │   └── 【Vane】通过 vane.configure 选择 Local 或 Ray Runner；
+│   │       使用 map_batches 执行 OCR，使用 Relation.project 执行
+│   │       AI 合同校验，并通过 Relation.write_parquet 统一物化路径。
+│   │
+│   ├── vane_functions.py
+│   │   # OCR 输出规范化和严格的 AI JSON 合同校验。
+│   │   └── 【Vane】validate_audit_fact_json 是无状态 Function；
+│   │       EvidenceOcrActor 是复用 RapidOCR 引擎的有状态 Actor；
+│   │       batch actor 负责从 MinIO 读取并批量处理证据图片。
+│   │
+│   ├── ai.py
+│   │   # 将 OCR 文本、供应商别名和图片组合成多模态请求，
+│   │   # 校验模型事实必须与可信证据角色一致，合同失败时重试一次。
+│   │   └── 【Vane】通过 vane.ai.prompt 调用 Qwen，并通过当前
+│   │       Runner 物化每份证据的模型响应。
+│   │
+│   ├── sql/
+│   │   ├── staging/
+│   │   │   ├── stg_scores.sql
+│   │   │   │   # 将 PostgreSQL 专家评分标准化，并关联供应商名称和别名。
+│   │   │   └── stg_evidence_images.sql
+│   │   │       # 选择支持 OCR 的 PNG 证据及其可信 MinIO locator。
+│   │   │
+│   │   ├── intermediate/
+│   │   │   ├── int_evidence_ocr.sql
+│   │   │   │   # 定义 OCR Relation 的输出合同；实际逐图片 OCR
+│   │   │   │   # 由 pipeline.py 通过 Vane Runner 批量执行。
+│   │   │   ├── int_conflict_facts.sql
+│   │   │   │   # 将 Runner 校验后的 AI JSON 转成推荐、参评、
+│   │   │   │   # 回避、证据原文和置信度等类型明确的事实。
+│   │   │   └── int_score_metrics.sql
+│   │   │       # 匹配供应商名称和别名，计算专家与 peers 的评分差，
+│   │   │       # 并重新计算包含和剔除该专家时的供应商排名。
+│   │   │
+│   │   └── marts/
+│   │       ├── audit_findings.sql
+│   │       │   # 用确定性 SQL 生成未回避、评分偏高和中标影响三类 Finding。
+│   │       └── audit_summary.sql
+│   │           # 汇总 Finding，并生成 passed、review_required
+│   │           # 或 insufficient_evidence 项目状态。
+│   │
+│   ├── output_writer.py
+│   │   # 校验 Finding、Summary 和证据引用，然后原子写入两个 JSONL 文件。
+│   │
+│   └── verify_outputs.py
+│       # 验证合成案例是否稳定产生三条 Finding 和预期的排名变化。
+│
+└── tests/fast/
+    # 覆盖来源合同、OCR Actor、AI 合同、SQL DAG、Runner 编排和输出发布。
+```
+
+执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Vane 负责在 Local 和 Ray 之间复用同一套 Relation 执行代码、复用有状态 OCR 引擎、调用多模态模型并物化中间结果；SQL 文件负责评分偏差、排名变化和审计规则，确保最终 Finding 来自可测试的确定性逻辑，而不是模型直接给出的合规结论。
 
 ## 审计逻辑与边界
 

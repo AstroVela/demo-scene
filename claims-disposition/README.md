@@ -46,15 +46,16 @@ stg_claims / stg_claim_materials / stg_run_config
   -> claim_disposition
 ```
 
-All transformations except the AI relation are ordinary DuckDB `.sql` files; the pipeline has no dbt, Jinja, macro, or `ref()` dependency.
+Deterministic aggregation and decision rules remain in ordinary DuckDB `.sql` files, while the Python orchestrator runs material processing, AI calls, and response validation through the Vane Runner. The pipeline has no dbt, Jinja, macro, or `ref()` dependency.
 
 ## What the demo does
 
-1. Loads four synthetic claims from PostgreSQL and eight JPEG/PNG objects from MinIO.
-2. Verifies locators, hashes, image quality, OCR fields, and claim-number consistency.
-3. Sends only trusted damage photos to Qwen and extracts damage and uncertainty facts.
-4. Applies deterministic SQL rules to choose one of the four workflow dispositions.
-5. Validates the nine-column output contract and replaces the PostgreSQL result snapshot in one transaction.
+1. Reads four synthetic claims and their material metadata from PostgreSQL, then follows the stored MinIO locators to read vehicle-damage photos and supporting claim documents; the runtime never reads local fixture files directly.
+2. Validates each material's file identity, order, role, media type, bucket, and canonical object path, then checks MinIO object existence and computes SHA-256 so that incorrect or replaced files cannot enter automated processing.
+3. Runs photo-quality analysis through the Vane Runner, reuses one RapidOCR engine for supporting documents, and extracts fields such as claim number, claimant name, and loss date to determine whether the materials are complete, legible, and consistent with the current claim.
+4. Sends only photos that pass completeness, quality, and hash validation to Qwen, which extracts structured facts including target-vehicle clarity, visible damage, damaged parts, damage types, severity, confidence, and uncertainty reasons.
+5. Enforces a strict contract on model responses and aggregates all photo results for each claim, identifying model failures, conflicting evidence, unclear target vehicles, insufficient confidence, and high-severity risks that prevent automated handling.
+6. Applies deterministic SQL precedence for requesting more materials, manual review, denial candidates, and payment candidates; validates the nine-column output contract; and writes the result to PostgreSQL in one transaction. The built-in fixture verifies that all four workflow outcomes remain reproducible.
 
 ## Run the demo
 
@@ -74,14 +75,92 @@ verified 4 claim dispositions: CLM-APPROVE=approve_for_payment, CLM-DENY=deny_cl
 
 There is no AI mock fallback: unavailable services, unreadable images, invalid AI JSON, incompatible runtimes, SQL failures, and publication failures all exit nonzero.
 
-## Where Vane is used
+## Implementation layout and where Vane is used
 
-| Need | Vane pattern |
-| --- | --- |
-| Object, hash, image-quality, OCR-field, and AI-contract checks | Stateless UDFs declared with `@vane.func` |
-| Reuse one initialized RapidOCR engine | Stateful actor declared with `@vane.cls(actor_number=1, gpus=0)` |
-| Send image bytes and structured context to Qwen | Multimodal AI Function through `vane.ai.prompt` |
-| Join facts and apply reviewable business rules | Relations and deterministic DuckDB SQL |
+```text
+claims-disposition/
+├── runtime.yml
+│   # Configures the Vane Runner (local/ray), PostgreSQL, MinIO, OCR, and Qwen.
+│
+├── scripts/
+│   └── run_demo.py
+│       # Demo entry point; verifies Python, Vane, and DuckDB before invoking the CLI.
+│
+├── src/claims_disposition_sql_pipeline/
+│   ├── cli.py
+│   │   # Dispatches the fixture, run, verify, and e2e commands.
+│   │
+│   ├── config.py
+│   │   # Loads and strictly validates runtime.yml into typed runtime settings.
+│   │
+│   ├── fixture_loader.py
+│   │   # Generates synthetic claim materials and writes them to PostgreSQL and MinIO.
+│   │   # The fixture initializes services; it is not a pipeline runtime source.
+│   │
+│   ├── pg.py
+│   │   # Defines the PostgreSQL raw/output tables, reads claims, and probes connectivity.
+│   │
+│   ├── minio_store.py
+│   │   # Wraps MinIO reads, existence checks, SHA-256, uploads, and cleanup.
+│   │
+│   ├── pipeline.py
+│   │   # Main DAG orchestrator: reads PostgreSQL, registers SQL inputs, schedules
+│   │   # material processing, AI, and decision SQL, then hands results to publication.
+│   │   └── [Vane] Uses vane.configure to select Local or Ray Runner;
+│   │       uses map_batches for material processing and model-response validation;
+│   │       uses Relation.write_parquet as the shared materialization path.
+│   │
+│   ├── vane_udfs.py
+│   │   # Implements photo quality, document fields, material quality, and AI JSON checks.
+│   │   └── [Vane] Defines stateless Functions, the reusable RapidOCR
+│   │       DocumentOcrActor, and batch actors executed by the Runner.
+│   │
+│   ├── photo_ai.py
+│   │   # Re-reads and hashes photos, builds damage prompts, and binds every request
+│   │   # and response to the same claim, file, and SHA-256.
+│   │   └── [Vane] Calls Qwen through vane.ai.prompt and materializes model
+│   │       responses through the active Runner.
+│   │
+│   ├── sql/
+│   │   ├── staging/
+│   │   │   ├── stg_claims.sql
+│   │   │   │   # Converts the PostgreSQL claim snapshot into a typed Claim Relation.
+│   │   │   ├── stg_claim_materials.sql
+│   │   │   │   # Expands materials_json per file and validates roles, media types,
+│   │   │   │   # duplicate identities, and canonical MinIO locators.
+│   │   │   └── stg_run_config.sql
+│   │   │       # Exposes credential-free OCR, model, and run settings to SQL.
+│   │   │
+│   │   ├── intermediate/
+│   │   │   ├── int_claim_material_facts.sql
+│   │   │   │   # Defines the material-processing contract and aggregates per-file
+│   │   │   │   # object, hash, quality, and OCR facts produced by the Vane Runner.
+│   │   │   ├── int_claim_damage_facts.sql
+│   │   │   │   # Aggregates Runner-validated photo damage facts per claim and
+│   │   │   │   # detects conflicts, uncertainty, and high-severity risk.
+│   │   │   └── int_claim_decision_facts.sql
+│   │   │       # Uses deterministic SQL to build request-materials, manual-review,
+│   │   │       # denial, and payment candidates with explicit precedence.
+│   │   │
+│   │   └── marts/
+│   │       └── claim_disposition.sql
+│   │           # Produces the final nine columns, including disposition, reason,
+│   │           # next action, and supporting_facts_json.
+│   │
+│   ├── output_writer.py
+│   │   # Validates the output contract and replaces the PostgreSQL snapshot atomically.
+│   │
+│   ├── verify_outputs.py
+│   │   # Verifies that four synthetic claims produce the four intended outcomes.
+│   │
+│   └── assets/
+│       # Synthetic vehicle photos and their provenance notices.
+│
+└── tests/fast/
+    # Covers configuration, Runner orchestration, SQL paths, publication, and packaging.
+```
+
+The execution path is `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`. Vane supplies the switchable execution backend, batch actors, multimodal model calls, and Relation materialization. The SQL files retain material aggregation and final decision logic, so the model extracts facts without deciding whether to pay or deny a claim.
 
 ## Decision boundary
 
