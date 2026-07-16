@@ -1,0 +1,2 @@
+# Install the pinned TestPyPI Vane wheel first; see docs/runbook.md.
+-e .[test]

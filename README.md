@@ -1,15 +1,26 @@
 # Demo Scene
 
-Scripts and samples for reproducible Vane demos.
+Reproducible Vane use cases for multimodal data and mixed compute workloads in
+unified Relation pipelines.
 
 ## Content
 
 ### AI / Data Pipelines
 
+* [Auditable Multimodal Claims Triage with Vane](claims-disposition) — PostgreSQL
+  claims, MinIO photos and documents, stateful OCR, multimodal fact extraction,
+  and deterministic SQL recommendations
+* [Procurement Conflict-of-Interest and Scoring Anomaly Audit with Vane](procurement-compliance-audit)
+  — score tables, image evidence, stateful OCR, multimodal fact extraction, and
+  deterministic audit rules
 * [Claims Evidence Graph with Vane](claims-evidence-graph)
 * [Multimodal Training Data Release with Vane](multimodal-training-data) — typed Relation branches and Arrow batch UDFs
 * [Enterprise Agent Evidence Governance with Vane](enterprise-agent-evidence) — multi-table joins, policy SQL, and review artifacts
 * [Web Text Deduplication with Vane](web-text-deduplication) — custom data sources, MinHash batch UDFs, and graph clustering
+
+## Shared Documentation
+
+* [Local Qwen2.5-VL service setup guide](docs/local-qwen-service.md) ([简体中文](docs/local-qwen-service.zh.md))
 
 ## Repository Policy
 
