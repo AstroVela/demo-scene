@@ -72,6 +72,7 @@ class AiConfig:
 @dataclass(frozen=True)
 class RuntimeConfig:
     version: int
+    runner: str
     postgres: PostgresConfig
     minio: MinioConfig
     ocr: OcrConfig
@@ -81,6 +82,7 @@ class RuntimeConfig:
         """Return useful diagnostics without credentials or a PostgreSQL DSN."""
 
         return (
+            f"runner={self.runner}; "
             f"postgres={self.postgres.raw_relation}->{self.postgres.output_relation}; "
             f"minio={self.minio.endpoint}/{self.minio.bucket} secure={self.minio.secure}; "
             f"ocr={self.ocr.engine}/{self.ocr.device}; "
@@ -206,6 +208,9 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
     version = root.get("version")
     if version != 1 or isinstance(version, bool):
         raise ConfigError("version must be 1")
+    runner = root.get("runner")
+    if not isinstance(runner, str) or runner not in {"local", "ray"}:
+        raise ConfigError("runner must be local or ray")
 
     postgres_data = _section(root, "postgres")
     postgres = PostgresConfig(
@@ -259,6 +264,7 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
 
     return RuntimeConfig(
         version=1,
+        runner=runner,
         postgres=postgres,
         minio=minio,
         ocr=ocr,

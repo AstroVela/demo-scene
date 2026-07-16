@@ -315,6 +315,9 @@ def build_evidence_ai_relation(
     prompt_function: Callable[..., Any] | None = None,
     health_probe: Callable[[AiConfig], None] = probe_qwen,
     object_store: Any | None = None,
+    request_relation_factory: Callable[[pa.Table], Any] | None = None,
+    response_materializer: Callable[[Any], pa.Table] | None = None,
+    result_factory: Callable[[pa.Table], Any] | None = None,
 ):
     """Run one multimodal relation call per qualified image and bind metadata."""
 
@@ -353,7 +356,12 @@ def build_evidence_ai_relation(
     for request in requests:
         current_request = request
         for attempt in range(2):
-            relation = session.from_arrow(_request_table(current_request))
+            request_table = _request_table(current_request)
+            relation = (
+                session.from_arrow(request_table)
+                if request_relation_factory is None
+                else request_relation_factory(request_table)
+            )
             result = prompt_callable(
                 relation,
                 "prompt_text",
@@ -366,7 +374,18 @@ def build_evidence_ai_relation(
                 output_column="raw_response",
                 num_gpus=0,
             )
-            response = _single_response(result.fetchall(), request)
+            if response_materializer is None:
+                response_rows = result.fetchall()
+            else:
+                response_table = response_materializer(result)
+                if response_table.num_columns != 1:
+                    raise EvidenceAiInputError(
+                        f"AI response for {request.file_id} must contain one string column"
+                    )
+                response_rows = [
+                    (value,) for value in response_table.column(0).to_pylist()
+                ]
+            response = _single_response(response_rows, request)
             try:
                 _validate_response_for_request(response, request)
             except AuditFactContractError as exc:
@@ -379,4 +398,5 @@ def build_evidence_ai_relation(
                 ) from exc
             completed.append((request, response))
             break
-    return session.from_arrow(_completed_table(completed))
+    table = _completed_table(completed)
+    return session.from_arrow(table) if result_factory is None else result_factory(table)

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
 import vane
 
 from .ai import build_evidence_ai_relation
@@ -18,7 +21,12 @@ from .minio_store import MinioStore
 from .output_writer import PublishedOutputs, write_outputs
 from .pg import connect_postgres, probe_postgres, read_source_rows
 from .source_data import SourceBundle, source_bundle_from_rows
-from .vane_functions import EvidenceOcrActor, validate_audit_fact_json_udf
+from .vane_functions import (
+    EVIDENCE_OCR_BATCH_SCHEMA,
+    EvidenceOcrActor,
+    build_evidence_ocr_batch_actor,
+    validate_audit_fact_json_udf,
+)
 from .verify_outputs import verify_fixture_outputs
 
 
@@ -45,10 +53,38 @@ CORE_RELATIONS = (
     "audit_summary",
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CREATE_RELATION_AS = re.compile(
+    r"create\s+or\s+replace\s+(?:table|view)\s+"
+    r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s+as\s+(?P<query>.+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class RuntimeConnectionError(ConnectionError):
     """Raised when PostgreSQL or MinIO cannot be reached."""
+
+
+class RunnerWorkspace:
+    """Stage driver-local Arrow data as scans visible to every Vane Runner."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.counter = 0
+
+    def stage_table(self, name: str, table: pa.Table) -> Path:
+        self.counter += 1
+        path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
+        pq.write_table(table, path)
+        return path
+
+    def relation_from_table(
+        self,
+        connection: Any,
+        name: str,
+        table: pa.Table,
+    ) -> Any:
+        path = self.stage_table(name, table)
+        return connection.sql(f"select * from read_parquet({_sql_literal(path)})")
 
 
 @dataclass(frozen=True)
@@ -66,6 +102,10 @@ def _safe_identifier(value: str) -> str:
     if not _IDENTIFIER.fullmatch(value):
         raise ValueError(f"invalid DuckDB identifier: {value!r}")
     return value
+
+
+def _sql_literal(value: Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
 
 
 def register_or_replace_table(
@@ -90,7 +130,41 @@ def register_or_replace_table(
         connection.unregister(temporary)
 
 
-def _execute_sql_file(connection: Any, path: Path) -> None:
+def _ensure_runner_write_compatibility() -> None:
+    """Bridge the pinned wheel's LocalRunner/progress signature mismatch."""
+
+    from duckdb.runners.progress import ProgressRenderer
+
+    original_update = ProgressRenderer.update
+    if "allow_terminal" in inspect.signature(original_update).parameters:
+        return
+
+    def compatible_update(
+        self: Any,
+        *,
+        force: bool = False,
+        allow_terminal: bool = False,
+    ) -> None:
+        del allow_terminal
+        original_update(self, force=force)
+
+    ProgressRenderer.update = compatible_update
+
+
+def materialize_relation(relation: Any) -> pa.Table:
+    """Materialize a Relation through the active Vane Runner write API."""
+
+    _ensure_runner_write_compatibility()
+    with TemporaryDirectory(prefix="procurement-runner-result-") as root:
+        path = Path(root) / "result.parquet"
+        relation.write_parquet(str(path))
+        return pq.read_table(path)
+
+
+def _execute_sql_file(
+    connection: Any,
+    path: Path,
+) -> None:
     try:
         statement = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -154,6 +228,107 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
     )
 
 
+def _create_evidence_ocr_table(
+    connection: Any,
+    config: RuntimeConfig,
+    *,
+    workspace: RunnerWorkspace,
+) -> None:
+    source = workspace.relation_from_table(
+        connection,
+        "evidence_ocr_input",
+        connection.sql("select * from stg_evidence_images").to_arrow_table(),
+    )
+    relation = source.map_batches(
+        build_evidence_ocr_batch_actor(config.minio),
+        schema=EVIDENCE_OCR_BATCH_SCHEMA,
+        actor_number=1,
+        gpus=0,
+    )
+    register_or_replace_table(
+        connection,
+        "int_evidence_ocr",
+        materialize_relation(relation),
+    )
+
+
+def _rewrite_conflict_validation_cte(query: str) -> str:
+    result, count = re.subn(
+        r"with\s+validated\s+as\s+materialized\s*\(.*?\)\s*select",
+        "with validated as (select * from __runner_validated_audit_facts)\nselect",
+        query,
+        count=1,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if count != 1:
+        raise RuntimeError("cannot isolate int_conflict_facts validation CTE")
+    return result
+
+
+def _create_runner_conflict_facts(
+    connection: Any,
+    path: Path,
+    *,
+    workspace: RunnerWorkspace,
+) -> None:
+    inputs = _relation_rows(connection, "int_evidence_ai", order_by="file_id")
+    roles = {
+        row["file_id"]: row
+        for row in _relation_rows(
+            connection,
+            "stg_evidence_images",
+            order_by="file_id",
+        )
+    }
+    validated_rows = []
+    for row in inputs:
+        source = workspace.relation_from_table(
+            connection,
+            "audit_fact_validation_input",
+            pa.table({"raw_response": [row["raw_response"]]}),
+        )
+        relation = source.project(
+            "validate_audit_fact_json(raw_response) as fact_json"
+        )
+        result = materialize_relation(relation)
+        if result.num_rows != 1:
+            raise RuntimeError("audit fact validation must return exactly one row")
+        evidence = roles[row["file_id"]]
+        validated_rows.append(
+            {
+                "project_id": evidence["project_id"],
+                "file_id": row["file_id"],
+                "role": evidence["role"],
+                "fact_json": result.column("fact_json")[0].as_py(),
+            }
+        )
+    register_or_replace_table(
+        connection,
+        "__runner_validated_audit_facts",
+        pa.Table.from_pylist(
+            validated_rows,
+            schema=pa.schema(
+                [
+                    ("project_id", pa.string()),
+                    ("file_id", pa.string()),
+                    ("role", pa.string()),
+                    ("fact_json", pa.string()),
+                ]
+            ),
+        ),
+    )
+    statement = path.read_text(encoding="utf-8")
+    match = _CREATE_RELATION_AS.fullmatch(
+        statement.strip().removesuffix(";").strip()
+    )
+    if match is None:
+        raise RuntimeError(f"invalid int_conflict_facts SQL stage: {path}")
+    connection.execute(
+        "create or replace view int_conflict_facts as "
+        + _rewrite_conflict_validation_cte(match.group("query"))
+    )
+
+
 def _register_inputs(connection: Any, source: SourceBundle) -> None:
     register_or_replace_table(connection, "input_project", source.project)
     register_or_replace_table(connection, "input_suppliers", source.suppliers)
@@ -178,39 +353,72 @@ def run_pipeline(
     runtime_probe(config)
     source = source_loader(config)
     executed: list[str] = []
-    connection = connection_factory()
-    try:
-        _register_inputs(connection, source)
-        runtime_function_attacher(connection, config)
-        for relation_name, sql_path in PRE_AI_STAGES:
-            _execute_sql_file(connection, sql_path)
-            executed.append(relation_name)
+    with TemporaryDirectory(
+        prefix=f"procurement-audit-{config.runner}-"
+    ) as workspace_root:
+        workspace = RunnerWorkspace(Path(workspace_root))
+        connection = connection_factory()
+        try:
+            _register_inputs(connection, source)
+            runtime_function_attacher(connection, config)
+            for relation_name, sql_path in PRE_AI_STAGES:
+                if relation_name == "int_evidence_ocr":
+                    _create_evidence_ocr_table(
+                        connection,
+                        config,
+                        workspace=workspace,
+                    )
+                else:
+                    _execute_sql_file(connection, sql_path)
+                executed.append(relation_name)
 
-        ocr_rows = _relation_rows(
-            connection,
-            "int_evidence_ocr",
-            order_by="file_id",
-        )
-        ai_relation = ai_relation_builder(
-            ocr_rows,
-            connection,
-            source,
-            config,
-        )
-        register_or_replace_table(
-            connection,
-            "int_evidence_ai",
-            ai_relation.to_arrow_table(),
-        )
-        executed.append("int_evidence_ai")
+            ocr_rows = _relation_rows(
+                connection,
+                "int_evidence_ocr",
+                order_by="file_id",
+            )
+            ai_table = ai_relation_builder(
+                ocr_rows,
+                connection,
+                source,
+                config,
+                request_relation_factory=lambda table: workspace.relation_from_table(
+                    connection,
+                    "evidence_ai_request",
+                    table,
+                ),
+                response_materializer=materialize_relation,
+                result_factory=lambda table: table,
+            )
+            register_or_replace_table(
+                connection,
+                "int_evidence_ai",
+                ai_table,
+            )
+            executed.append("int_evidence_ai")
 
-        for relation_name, sql_path in POST_AI_STAGES:
-            _execute_sql_file(connection, sql_path)
-            executed.append(relation_name)
-        findings = _relation_rows(connection, "audit_findings", order_by="rule_id")
-        summaries = _relation_rows(connection, "audit_summary", order_by="project_id")
-    finally:
-        connection.close()
+            for relation_name, sql_path in POST_AI_STAGES:
+                if relation_name == "int_conflict_facts":
+                    _create_runner_conflict_facts(
+                        connection,
+                        sql_path,
+                        workspace=workspace,
+                    )
+                else:
+                    _execute_sql_file(connection, sql_path)
+                executed.append(relation_name)
+            findings = _relation_rows(
+                connection,
+                "audit_findings",
+                order_by="rule_id",
+            )
+            summaries = _relation_rows(
+                connection,
+                "audit_summary",
+                order_by="project_id",
+            )
+        finally:
+            connection.close()
 
     verify_fixture_outputs(findings, summaries)
     evidence_ids = frozenset(row["file_id"] for row in source.evidence.to_pylist())

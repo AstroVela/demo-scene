@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 import re
 import sys
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Sequence
 
 import duckdb
 import pyarrow as pa
+import pyarrow.parquet as pq
 import vane
 
 from .config import DEFAULT_CONFIG_PATH, RuntimeConfig, load_runtime_config
@@ -19,7 +22,11 @@ from .output_writer import replace_output_rows
 from .pg import connect_postgres, probe_postgres, read_claim_rows
 from .photo_ai import build_photo_ai_relation
 from .vane_udfs import (
+    CLAIM_MATERIAL_BATCH_SCHEMA,
+    DAMAGE_VALIDATION_BATCH_SCHEMA,
     DocumentOcrActor,
+    build_claim_material_batch_actor,
+    build_damage_validation_batch,
     build_minio_udfs,
     stable_json,
     stateless_udf_specs,
@@ -39,10 +46,38 @@ SQL_FINAL_STAGES = (
     SQL_ROOT / "marts/claim_disposition.sql",
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_CREATE_RELATION_AS = re.compile(
+    r"create\s+or\s+replace\s+(?:table|view)\s+"
+    r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s+as\s+(?P<query>.+)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class RuntimeConnectionError(ConnectionError):
     """Raised when one or more required storage services are unavailable."""
+
+
+class RunnerWorkspace:
+    """Stage driver-local Arrow data as scans visible to every Vane Runner."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.counter = 0
+
+    def stage_table(self, name: str, table: pa.Table) -> Path:
+        self.counter += 1
+        path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
+        pq.write_table(table, path)
+        return path
+
+    def relation_from_table(
+        self,
+        connection: Any,
+        name: str,
+        table: pa.Table,
+    ) -> Any:
+        path = self.stage_table(name, table)
+        return connection.sql(f"select * from read_parquet({_sql_literal(path)})")
 
 
 def build_run_config_row(
@@ -99,6 +134,10 @@ def _safe_identifier(value: str) -> str:
     return value
 
 
+def _sql_literal(value: Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 def register_or_replace_table(
     connection: Any,
     target: str,
@@ -119,6 +158,37 @@ def register_or_replace_table(
         )
     finally:
         connection.unregister(temporary)
+
+
+def _ensure_runner_write_compatibility() -> None:
+    """Bridge the pinned wheel's LocalRunner/progress signature mismatch."""
+
+    from duckdb.runners.progress import ProgressRenderer
+
+    original_update = ProgressRenderer.update
+    if "allow_terminal" in inspect.signature(original_update).parameters:
+        return
+
+    def compatible_update(
+        self: Any,
+        *,
+        force: bool = False,
+        allow_terminal: bool = False,
+    ) -> None:
+        del allow_terminal
+        original_update(self, force=force)
+
+    ProgressRenderer.update = compatible_update
+
+
+def materialize_relation(relation: Any) -> pa.Table:
+    """Materialize a Relation through the active Vane Runner write API."""
+
+    _ensure_runner_write_compatibility()
+    with TemporaryDirectory(prefix="claims-runner-result-") as root:
+        path = Path(root) / "result.parquet"
+        relation.write_parquet(str(path))
+        return pq.read_table(path)
 
 
 def probe_runtime(config: RuntimeConfig) -> None:
@@ -157,7 +227,141 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
     )
 
 
-def _execute_sql_file(connection: Any, path: Path) -> None:
+def _claim_material_aggregation_query(path: Path) -> str:
+    statement = path.read_text(encoding="utf-8")
+    match = _CREATE_RELATION_AS.fullmatch(
+        statement.strip().removesuffix(";").strip()
+    )
+    if match is None:
+        raise RuntimeError(f"invalid claim material SQL stage: {path}")
+    query = match.group("query")
+    marker = "aggregated as ("
+    marker_index = query.find(marker)
+    if marker_index < 0:
+        raise RuntimeError("claim material SQL stage is missing aggregated CTE")
+    return (
+        "with claims as (select * from stg_claims), "
+        "run_config as (select * from stg_run_config), "
+        "row_facts as (select * from __runner_claim_material_row_facts), "
+        + query[marker_index:]
+    )
+
+
+def _create_runner_claim_material_facts(
+    connection: Any,
+    config: RuntimeConfig,
+    path: Path,
+    *,
+    workspace: RunnerWorkspace,
+) -> None:
+    source = workspace.relation_from_table(
+        connection,
+        "claim_material_input",
+        connection.sql("select * from stg_claim_materials").to_arrow_table(),
+    )
+    relation = source.map_batches(
+        build_claim_material_batch_actor(
+            config.minio,
+            required_fields=config.ocr.required_fields,
+            minimum_text_confidence=config.ocr.minimum_text_confidence,
+        ),
+        schema=CLAIM_MATERIAL_BATCH_SCHEMA,
+        actor_number=1,
+        gpus=0,
+    )
+    register_or_replace_table(
+        connection,
+        "__runner_claim_material_row_facts",
+        materialize_relation(relation),
+    )
+    connection.execute(
+        "create or replace table int_claim_material_facts as "
+        + _claim_material_aggregation_query(path)
+    )
+
+
+def _damage_aggregation_query(path: Path) -> str:
+    statement = path.read_text(encoding="utf-8")
+    match = _CREATE_RELATION_AS.fullmatch(
+        statement.strip().removesuffix(";").strip()
+    )
+    if match is None:
+        raise RuntimeError(f"invalid claim damage SQL stage: {path}")
+    query = match.group("query")
+    marker = "aggregated_damage_facts as ("
+    marker_index = query.find(marker)
+    if marker_index < 0:
+        raise RuntimeError("claim damage SQL stage is missing aggregate CTE")
+    return (
+        "with material_facts as (select * from int_claim_material_facts), "
+        "classified_photo_results as "
+        "(select * from __runner_classified_photo_results), "
+        + query[marker_index:]
+    )
+
+
+def _create_runner_claim_damage_facts(
+    connection: Any,
+    path: Path,
+    *,
+    workspace: RunnerWorkspace,
+) -> None:
+    model_responses = connection.sql(
+        """
+        with photo_values as (
+          select
+            material_facts.claim_id,
+            unnest(json_extract(material_facts.usable_photo_inputs_json, '$[*]'))
+              as photo_json
+          from int_claim_material_facts as material_facts
+          where material_facts.model_input_usable
+        ),
+        model_inputs as (
+          select
+            claim_id,
+            try_cast(json_extract(photo_json, '$.file_order') as integer)
+              as file_order,
+            json_extract_string(photo_json, '$.file_id') as file_id,
+            json_extract_string(photo_json, '$.sha256') as photo_sha256,
+            cast(json_extract(photo_json, '$.photo_quality') as varchar)
+              as photo_quality_json
+          from photo_values
+        )
+        select
+          model_inputs.*,
+          ai.raw_damage_response
+        from model_inputs
+        left join int_claim_photo_ai as ai
+          on model_inputs.claim_id = ai.claim_id
+         and model_inputs.file_id = ai.file_id
+         and model_inputs.photo_sha256 = ai.photo_sha256
+        """
+    ).to_arrow_table()
+    source = workspace.relation_from_table(
+        connection,
+        "damage_validation_input",
+        model_responses,
+    )
+    relation = source.map_batches(
+        build_damage_validation_batch(),
+        schema=DAMAGE_VALIDATION_BATCH_SCHEMA,
+        gpus=0,
+    )
+    register_or_replace_table(
+        connection,
+        "__runner_classified_photo_results",
+        materialize_relation(relation),
+    )
+    connection.execute(
+        "create or replace table int_claim_damage_facts as "
+        + _damage_aggregation_query(path)
+    )
+
+
+def _execute_sql_file(
+    connection: Any,
+    path: Path,
+) -> None:
     try:
         statement = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -165,7 +369,10 @@ def _execute_sql_file(connection: Any, path: Path) -> None:
     connection.execute(statement)
 
 
-def _relation_rows(connection: Any, relation_name: str) -> list[dict[str, Any]]:
+def _relation_rows(
+    connection: Any,
+    relation_name: str,
+) -> list[dict[str, Any]]:
     relation = connection.sql(f"select * from {_safe_identifier(relation_name)}")
     columns = list(relation.columns)
     return [dict(zip(columns, row)) for row in relation.fetchall()]
@@ -174,47 +381,85 @@ def _relation_rows(connection: Any, relation_name: str) -> list[dict[str, Any]]:
 def _create_photo_ai_table(
     connection: Any,
     config: RuntimeConfig,
+    *,
+    workspace: RunnerWorkspace,
 ) -> None:
     material_rows = _relation_rows(connection, "int_claim_material_facts")
-    result = build_photo_ai_relation(material_rows, connection, config)
+    table = build_photo_ai_relation(
+        material_rows,
+        connection,
+        config,
+        request_relation_factory=lambda value: workspace.relation_from_table(
+            connection,
+            "photo_ai_request",
+            value,
+        ),
+        response_materializer=materialize_relation,
+        result_factory=lambda value: value,
+    )
     register_or_replace_table(
         connection,
         "int_claim_photo_ai",
-        result.to_arrow_table(),
+        table,
     )
 
 
-def run_pipeline(config: RuntimeConfig) -> int:
+def run_pipeline(
+    config: RuntimeConfig,
+) -> int:
     """Execute the complete DAG and atomically publish its validated mart."""
 
-    vane.configure(runner="local")
+    vane.configure(runner=config.runner)
     probe_runtime(config)
     run_started_at = datetime.now(timezone.utc)
     claim_rows = read_claim_rows_with_json(config)
 
-    connection = duckdb.connect()
-    try:
-        register_or_replace_table(
-            connection,
-            "claims_runtime_claims",
-            rows_to_arrow(claim_rows),
-        )
-        register_or_replace_table(
-            connection,
-            "claims_runtime_run_config",
-            rows_to_arrow([build_run_config_row(config, run_started_at)]),
-        )
-        attach_runtime_functions(connection, config)
-        for sql_path in SQL_STAGES:
-            _execute_sql_file(connection, sql_path)
-        _create_photo_ai_table(connection, config)
-        for sql_path in SQL_FINAL_STAGES:
-            _execute_sql_file(connection, sql_path)
-        rows = connection.sql(
-            "select * from claim_disposition order by claim_id"
-        ).to_arrow_table().to_pylist()
-    finally:
-        connection.close()
+    with TemporaryDirectory(
+        prefix=f"claims-disposition-{config.runner}-"
+    ) as workspace_root:
+        workspace = RunnerWorkspace(Path(workspace_root))
+        connection = duckdb.connect()
+        try:
+            register_or_replace_table(
+                connection,
+                "claims_runtime_claims",
+                rows_to_arrow(claim_rows),
+            )
+            register_or_replace_table(
+                connection,
+                "claims_runtime_run_config",
+                rows_to_arrow([build_run_config_row(config, run_started_at)]),
+            )
+            attach_runtime_functions(connection, config)
+            for sql_path in SQL_STAGES:
+                if sql_path.stem == "int_claim_material_facts":
+                    _create_runner_claim_material_facts(
+                        connection,
+                        config,
+                        sql_path,
+                        workspace=workspace,
+                    )
+                    continue
+                _execute_sql_file(connection, sql_path)
+            _create_photo_ai_table(
+                connection,
+                config,
+                workspace=workspace,
+            )
+            for sql_path in SQL_FINAL_STAGES:
+                if sql_path.stem == "int_claim_damage_facts":
+                    _create_runner_claim_damage_facts(
+                        connection,
+                        sql_path,
+                        workspace=workspace,
+                    )
+                    continue
+                _execute_sql_file(connection, sql_path)
+            rows = connection.sql(
+                "select * from claim_disposition order by claim_id"
+            ).to_arrow_table().to_pylist()
+        finally:
+            connection.close()
 
     return replace_output_rows(rows, config)
 

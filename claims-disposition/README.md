@@ -17,7 +17,7 @@ The synthetic fixture covers four workflow outcomes:
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends, so production implementations can move from local to high-concurrency distributed execution by switching the Runner; this demo's verified launcher remains local.
+Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. This demo is verified with both `local` and `ray`; the checked-in default remains `local`.
 
 ## Architecture
 

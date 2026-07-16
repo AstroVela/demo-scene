@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
@@ -427,21 +427,20 @@ def build_photo_ai_relation(
     material_rows: Iterable[Mapping[str, Any]],
     session: Any,
     config: RuntimeConfig,
+    *,
+    request_relation_factory: Callable[[pa.Table], Any] | None = None,
+    response_materializer: Callable[[Any], pa.Table] | None = None,
+    result_factory: Callable[[pa.Table], Any] | None = None,
 ):
     """Build the typed Vane relation that performs real multimodal inference."""
 
     requests = build_photo_requests(material_rows, MinioStore(config.minio))
     if not requests:
-        return session.sql(
-            """
-            select
-              cast(null as varchar) as claim_id,
-              cast(null as varchar) as file_id,
-              cast(null as integer) as file_order,
-              cast(null as varchar) as photo_sha256,
-              cast(null as varchar) as raw_damage_response
-            where false
-            """
+        table = _completed_requests_to_arrow([])
+        return (
+            session.from_arrow(table)
+            if result_factory is None
+            else result_factory(table)
         )
 
     probe_qwen(config.ai)
@@ -462,7 +461,12 @@ def build_photo_ai_relation(
     for request_index, request in enumerate(requests):
         # Vane prompt output is output-only, and actor evaluation order is not a
         # stable relation row order. One-row calls bind audit metadata directly.
-        relation = session.from_arrow(_request_to_arrow(request))
+        request_table = _request_to_arrow(request)
+        relation = (
+            session.from_arrow(request_table)
+            if request_relation_factory is None
+            else request_relation_factory(request_table)
+        )
         result = vane.ai.prompt(
             relation,
             "prompt_text",
@@ -475,9 +479,23 @@ def build_photo_ai_relation(
             output_column="raw_damage_response",
             num_gpus=0,
         )
-        response = _single_response(result.fetchall(), request_index)
+        if response_materializer is None:
+            response_rows = result.fetchall()
+        else:
+            response_table = response_materializer(result)
+            if response_table.num_columns != 1:
+                raise PhotoAiInputError(
+                    f"AI response row {request_index} must contain exactly one column"
+                )
+            response_rows = [
+                (value,) for value in response_table.column(0).to_pylist()
+            ]
+        response = _single_response(response_rows, request_index)
         completed.append((request, response))
 
-    return session.from_arrow(
-        _completed_requests_to_arrow(completed)
+    table = _completed_requests_to_arrow(completed)
+    return (
+        session.from_arrow(table)
+        if result_factory is None
+        else result_factory(table)
     )

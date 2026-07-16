@@ -17,7 +17,7 @@
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦，生产实现可以通过切换 Runner 从单机扩展到高并发分布式执行；本 Demo 当前验证的 Launcher 仍使用 local Runner。
+Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。本 Demo 已验证 `local` 和 `ray` 两种 Runner，仓库默认仍为 `local`。
 
 ## 架构
 

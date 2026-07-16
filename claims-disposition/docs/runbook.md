@@ -159,6 +159,7 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 
 | Setting | Default |
 | --- | --- |
+| Runner | `local` |
 | PostgreSQL DSN | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
 | Raw relation | `claims_disposition_raw.claims` |
 | Output relation | `claims_disposition_output.claim_disposition` |
@@ -166,7 +167,9 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 | OCR | RapidOCR on CPU; required fields `claim_number`, `claimant_name`, `loss_date`; minimum mean confidence `0.70` |
 | AI | OpenAI provider; `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-This demo currently calls `vane.configure(runner="local")` directly and does not expose a Runner setting in `runtime.yml`. Vane's distributed Runner is a production adaptation path, not a release-validated switch in this fixture.
+Set `runner: local` or `runner: ray` in `runtime.yml`. Both modes are end-to-end verified on the single-host fixture and use the same Runner-backed Relation path. Driver-local Arrow inputs are staged as temporary Parquet files, and `Relation.write_parquet()` dispatches OCR, AI, and validation plans through the active Vane Runner (`LocalRunner.run_write` or `RayRunner.run_write`). Vane selects the matching subprocess or Ray execution backend for batch functions. The materialized Arrow results are then registered in the driver's DuckDB catalog for deterministic joins and aggregates, and temporary staging files are deleted when the run finishes.
+
+The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the shared materializer deliberately uses the Runner-backed write API instead of a direct DuckDB export. A narrow compatibility adapter only normalizes the Local Runner progress-callback signature in this build; it does not bypass the Runner.
 
 The loader validates YAML shape, SQL identifiers, loopback URLs, required values, and numeric ranges. Diagnostics avoid printing the complete PostgreSQL DSN, MinIO secret, or AI key. For a loopback AI URL, the launcher removes HTTP proxy variables and augments `NO_PROXY`/`no_proxy`.
 

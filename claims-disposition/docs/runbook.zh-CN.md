@@ -159,6 +159,7 @@ python -m pytest tests/fast -q
 
 | 配置项 | 默认值 |
 | --- | --- |
+| Runner | `local` |
 | PostgreSQL DSN | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
 | 原始 Relation | `claims_disposition_raw.claims` |
 | 输出 Relation | `claims_disposition_output.claim_disposition` |
@@ -166,7 +167,9 @@ python -m pytest tests/fast -q
 | OCR | RapidOCR CPU；必需字段 `claim_number`、`claimant_name`、`loss_date`；最低平均置信度 `0.70` |
 | AI | OpenAI provider；`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
 
-本 Demo 当前直接调用 `vane.configure(runner="local")`，没有在 `runtime.yml` 中暴露 Runner 配置。Vane 的分布式 Runner 是生产适配路径，不是这个 Fixture 已完成发布验收的切换项。
+在 `runtime.yml` 中设置 `runner: local` 或 `runner: ray`。两种模式都已在单机 Fixture 上完成端到端验证，并共用同一条基于 Runner 的 Relation 执行路径。Driver 本地 Arrow 输入会临时落为 Parquet，`Relation.write_parquet()` 再通过当前启用的 Vane Runner（`LocalRunner.run_write` 或 `RayRunner.run_write`）执行 OCR、AI 和校验计划；批处理函数的 subprocess 或 Ray 执行后端由 Vane 自动选择。物化后的 Arrow 结果会注册回 Driver 的 DuckDB catalog，继续完成确定性的 join 和聚合；运行结束后会删除临时 staging 文件。
+
+当前锁定的 Vane 版本尚未实现 `LocalRunner.run_iter_tables`，因此公共物化器有意采用 Runner-backed write API，而不是回退到 DuckDB 直接导出。代码中的窄兼容适配只用于统一该版本 Local Runner 的进度回调签名，不会绕过 Runner。
 
 加载器会校验 YAML 结构、SQL identifier、loopback URL、必需值和数值范围。诊断不会打印完整 PostgreSQL DSN、MinIO secret 或 AI key。当 AI URL 是 loopback 地址时，Launcher 会清理 HTTP proxy 变量并补充 `NO_PROXY`/`no_proxy`。
 

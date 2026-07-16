@@ -233,7 +233,9 @@ to:
 runner: ray
 ```
 
-PostgreSQL/MinIO source contracts, AI relation calls, UDFs, and SQL files remain unchanged. Release validation currently covers `local` only; `ray` requires a smoke test on the target cluster.
+PostgreSQL/MinIO source contracts and business SQL remain unchanged. Both modes are end-to-end verified on the single-host fixture and use the same Runner-backed Relation path. Driver-local Arrow inputs are staged as temporary Parquet files, and `Relation.write_parquet()` dispatches OCR, AI, and validation plans through the active Vane Runner (`LocalRunner.run_write` or `RayRunner.run_write`). Vane selects the matching subprocess or Ray execution backend for batch functions. The materialized Arrow results are then registered in the driver's DuckDB catalog for deterministic joins and aggregates. A real multi-node target cluster still requires its own infrastructure smoke test.
+
+The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the shared materializer deliberately uses the Runner-backed write API instead of a direct DuckDB export. A narrow compatibility adapter only normalizes the Local Runner progress-callback signature in this build; it does not bypass the Runner.
 
 ## Troubleshooting
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from procurement_audit_sql_demo import pipeline
@@ -17,6 +18,24 @@ from procurement_audit_sql_demo.vane_functions import stable_json, validate_audi
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = PROJECT_ROOT / "fixtures/expert-score-anomaly"
+
+
+def test_materialize_relation_uses_runner_backed_relation_write():
+    expected = pa.table({"value": [1, 2]})
+    calls = []
+
+    class Relation:
+        def write_parquet(self, path):
+            calls.append(Path(path))
+            pq.write_table(expected, path)
+
+        def to_arrow_table(self):
+            raise AssertionError("direct DuckDB materialization used")
+
+    actual = pipeline.materialize_relation(Relation())
+
+    assert len(calls) == 1
+    assert actual.equals(expected)
 
 
 def _source_and_store():
@@ -109,7 +128,10 @@ def test_source_loader_reads_postgres_snapshot(monkeypatch):
     assert events == ["procurement_audit_raw", "postgres:enter", "postgres:exit"]
 
 
-def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path):
+def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
+    tmp_path,
+    monkeypatch,
+):
     config = replace(
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
         output_dir=tmp_path / "output",
@@ -143,11 +165,34 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path)
             "VARCHAR",
         )
 
-    def build_ai(ocr_rows, connection, source_bundle, runtime_config):
+    def build_ai(
+        ocr_rows,
+        connection,
+        source_bundle,
+        runtime_config,
+        **_kwargs,
+    ):
         events.append(f"ai:{len(ocr_rows)}")
         assert runtime_config is config
         assert {row["file_id"] for row in ocr_rows} == {"EVD-REC-001", "EVD-MIN-001"}
-        return connection.from_arrow(_fixed_ai_table())
+        return _fixed_ai_table()
+
+    monkeypatch.setattr(
+        pipeline,
+        "_create_evidence_ocr_table",
+        lambda connection, _config, **_kwargs: pipeline._execute_sql_file(
+            connection,
+            pipeline.PRE_AI_STAGES[2][1],
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_create_runner_conflict_facts",
+        lambda connection, path, **_kwargs: pipeline._execute_sql_file(
+            connection,
+            path,
+        ),
+    )
 
     result = run_pipeline(
         config,
@@ -173,7 +218,10 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(tmp_path)
     )["flagged_expert_id"] == "EXP-001"
 
 
-def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(tmp_path):
+def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
+    tmp_path,
+    monkeypatch,
+):
     config = replace(
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
         output_dir=tmp_path / "output",
@@ -215,14 +263,30 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(tmp_path):
             "VARCHAR",
         )
 
-    def build_ai(ocr_rows, connection, source_bundle, runtime_config):
+    def build_ai(
+        ocr_rows,
+        connection,
+        source_bundle,
+        runtime_config,
+        **kwargs,
+    ):
         return build_evidence_ai_relation(
             ocr_rows,
             connection,
             source_bundle,
             runtime_config,
             object_store=store,
+            **kwargs,
         )
+
+    monkeypatch.setattr(
+        pipeline,
+        "_create_evidence_ocr_table",
+        lambda connection, _config, **_kwargs: pipeline._execute_sql_file(
+            connection,
+            pipeline.PRE_AI_STAGES[2][1],
+        ),
+    )
 
     with pytest.raises(EvidenceAiInputError, match="EVD-MIN-001"):
         run_pipeline(

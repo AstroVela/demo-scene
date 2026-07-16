@@ -233,7 +233,9 @@ runner: local
 runner: ray
 ```
 
-PostgreSQL/MinIO 来源合同、AI Relation 调用、UDF 和 SQL 文件保持不变。当前发布验收只覆盖 `local`；`ray` 需要在目标集群单独完成 smoke test。
+PostgreSQL/MinIO 来源合同和业务 SQL 保持不变。两种模式都已在单机 Fixture 上完成端到端验证，并共用同一条基于 Runner 的 Relation 执行路径。Driver 本地 Arrow 输入会临时落为 Parquet，`Relation.write_parquet()` 再通过当前启用的 Vane Runner（`LocalRunner.run_write` 或 `RayRunner.run_write`）执行 OCR、AI 和校验计划；批处理函数的 subprocess 或 Ray 执行后端由 Vane 自动选择。物化后的 Arrow 结果会注册回 Driver 的 DuckDB catalog，继续完成确定性的 join 和聚合。真实多节点目标集群仍需单独做基础设施 smoke test。
+
+当前锁定的 Vane 版本尚未实现 `LocalRunner.run_iter_tables`，因此公共物化器有意采用 Runner-backed write API，而不是回退到 DuckDB 直接导出。代码中的窄兼容适配只用于统一该版本 Local Runner 的进度回调签名，不会绕过 Runner。
 
 ## 排错
 
