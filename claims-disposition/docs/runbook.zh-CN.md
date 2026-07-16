@@ -104,7 +104,7 @@ PY
 
 ### 本地 Qwen 服务
 
-模型服务需要使用独立环境，完整步骤见[本地 Qwen2.5-VL 服务搭建指南](local-qwen-service.zh.md)。项目要求：
+模型服务需要使用独立环境，完整步骤见[本地 Qwen2.5-VL 服务搭建指南](../../docs/local-qwen-service.zh.md)。项目要求：
 
 ```bash
 curl -fsS -o /dev/null -w 'health HTTP %{http_code}\n' \
@@ -222,7 +222,7 @@ Writer 会在打开发布事务前校验九列、类型、枚举、置信度和�
 | 缺少直接依赖 | 执行 `python -m pip install -r requirements.txt` 和 `python -m pip check` |
 | PostgreSQL 连接或鉴权失败 | 检查 endpoint、database、role、密码，以及 schema/table 创建和写入权限 |
 | MinIO 连接或鉴权失败 | 检查 endpoint、凭据、HTTP/TLS 模式，以及 bucket create/list/read/write/delete 权限 |
-| Qwen health、模型名或图片请求失败 | 按照[本地 Qwen 指南](local-qwen-service.zh.md)检查 driver、OOM、端口、served name、模型下载和代理 |
+| Qwen health、模型名或图片请求失败 | 按照[本地 Qwen 指南](../../docs/local-qwen-service.zh.md)检查 driver、OOM、端口、served name、模型下载和代理 |
 | `fixture load failed` | 检查 PostgreSQL 和 MinIO 权限；重跑 `fixture` 只会刷新合成快照 |
 | `verification failed` | 查看命令报告的缺失、额外、重复或不匹配理赔，修复服务/Runtime 后重跑 `e2e` |
 

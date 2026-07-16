@@ -9,6 +9,7 @@ from procurement_audit_sql_demo.verify_outputs import EXPECTED_RULES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = PROJECT_ROOT.parent
 
 
 def test_release_shape_is_deliberately_small():
@@ -67,7 +68,10 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
         name: (PROJECT_ROOT / name).read_text(encoding="utf-8")
         for name in ("docs/runbook.md", "docs/runbook.zh-CN.md")
     }
-    qwen_guide_path = PROJECT_ROOT / "docs/local-qwen-service.zh.md"
+    qwen_guide_paths = (
+        REPOSITORY_ROOT / "docs/local-qwen-service.md",
+        REPOSITORY_ROOT / "docs/local-qwen-service.zh.md",
+    )
     project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
@@ -87,12 +91,15 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
 
     assert "python scripts/run_demo.py" in readme
     assert "docs/runbook.md" in readme
-    assert "docs/local-qwen-service.zh.md" in readme
-    assert qwen_guide_path.is_file()
-    qwen_guide = qwen_guide_path.read_text(encoding="utf-8")
-    assert "vllm==0.25.1" in qwen_guide
-    assert "66285546d2b821cf421d4f5eb2576359d3770cd3" in qwen_guide
-    assert "/v1/chat/completions" in qwen_guide
+    assert "../docs/local-qwen-service.md" in readme
+    assert "../docs/local-qwen-service.zh.md" in readme
+    for qwen_guide_path in qwen_guide_paths:
+        assert qwen_guide_path.is_file()
+        assert not (PROJECT_ROOT / "docs" / qwen_guide_path.name).exists()
+        qwen_guide = qwen_guide_path.read_text(encoding="utf-8")
+        assert "vllm==0.25.1" in qwen_guide
+        assert "66285546d2b821cf421d4f5eb2576359d3770cd3" in qwen_guide
+        assert "/v1/chat/completions" in qwen_guide
     assert "vane-ai==0.1.0.dev20260714234347" in project["dependencies"]
     assert "openai==2.45.0" in project["dependencies"]
     assert any(item.startswith("minio") for item in project["dependencies"])

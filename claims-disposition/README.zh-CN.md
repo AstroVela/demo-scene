@@ -178,7 +178,7 @@ Qwen 只提取损伤事实、置信度和证据限制，不决定支付或拒赔
 ## 文档与数据规范
 
 - [运行手册](docs/runbook.zh-CN.md)
-- [本地 Qwen2.5-VL 服务搭建指南](docs/local-qwen-service.zh.md)
+- [本地 Qwen2.5-VL 服务搭建指南](../docs/local-qwen-service.zh.md)
 - [英文架构图](docs/vane-claims-data-flow.en.png)
 
 所有理赔记录、文档和标识符均为合成数据。不要提交真实理赔记录、客户照片、私人文档、生产凭据、模型权重或运行生成数据。

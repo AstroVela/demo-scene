@@ -18,6 +18,10 @@ unified Relation pipelines.
 * [Enterprise Agent Evidence Governance with Vane](enterprise-agent-evidence) — multi-table joins, policy SQL, and review artifacts
 * [Web Text Deduplication with Vane](web-text-deduplication) — custom data sources, MinHash batch UDFs, and graph clustering
 
+## Shared Documentation
+
+* [Local Qwen2.5-VL service setup guide](docs/local-qwen-service.md) ([简体中文](docs/local-qwen-service.zh.md))
+
 ## Repository Policy
 
 This repository is intended to be public. Demo code, synthetic fixtures,

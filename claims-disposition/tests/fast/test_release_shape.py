@@ -5,6 +5,7 @@ import tomllib
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = PROJECT_ROOT.parent
 PINNED_VANE = "vane-ai==0.1.0.dev20260714234347"
 PINNED_OPENAI = "openai==2.45.0"
 QWEN_REVISION = "66285546d2b821cf421d4f5eb2576359d3770cd3"
@@ -92,17 +93,18 @@ def test_runbooks_explain_direct_dependencies_and_service_ownership():
 
 
 def test_readmes_link_the_matching_qwen_guides():
-    assert "docs/local-qwen-service.md" in (PROJECT_ROOT / "README.md").read_text(
+    assert "../docs/local-qwen-service.md" in (PROJECT_ROOT / "README.md").read_text(
         encoding="utf-8"
     )
-    assert "docs/local-qwen-service.zh.md" in (
+    assert "../docs/local-qwen-service.zh.md" in (
         PROJECT_ROOT / "README.zh-CN.md"
     ).read_text(encoding="utf-8")
 
 
 def test_qwen_guides_pin_and_smoke_test_the_model_service():
-    for name in ("docs/local-qwen-service.md", "docs/local-qwen-service.zh.md"):
-        path = PROJECT_ROOT / name
+    for name in ("local-qwen-service.md", "local-qwen-service.zh.md"):
+        assert not (PROJECT_ROOT / "docs" / name).exists()
+        path = REPOSITORY_ROOT / "docs" / name
         assert path.is_file(), f"missing {name}"
         text = path.read_text(encoding="utf-8")
         assert "vllm==0.25.1" in text
@@ -129,8 +131,8 @@ def test_release_files_do_not_reference_the_legacy_runtime():
     release_files.extend(
         path
         for path in (
-            PROJECT_ROOT / "docs/local-qwen-service.md",
-            PROJECT_ROOT / "docs/local-qwen-service.zh.md",
+            REPOSITORY_ROOT / "docs/local-qwen-service.md",
+            REPOSITORY_ROOT / "docs/local-qwen-service.zh.md",
         )
         if path.is_file()
     )

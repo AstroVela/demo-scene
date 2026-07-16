@@ -104,7 +104,7 @@ PY
 
 ### Local Qwen service
 
-Use a separate model-server environment and follow the [complete local Qwen2.5-VL guide](local-qwen-service.md). The required service contract is:
+Use a separate model-server environment and follow the [complete local Qwen2.5-VL guide](../../docs/local-qwen-service.md). The required service contract is:
 
 ```bash
 curl -fsS -o /dev/null -w 'health HTTP %{http_code}\n' \
@@ -222,7 +222,7 @@ The writer validates all nine columns, types, enums, confidence, and timestamps 
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
 | PostgreSQL connection/authentication fails | Check the endpoint, database, role, password, and permissions for schema/table creation and writes |
 | MinIO connection/authentication fails | Check endpoint, credentials, HTTP/TLS mode, and bucket create/list/read/write/delete permissions |
-| Qwen health, model, or image request fails | Follow the [Qwen guide](local-qwen-service.md) for driver, OOM, port, served-name, model-download, and proxy checks |
+| Qwen health, model, or image request fails | Follow the [Qwen guide](../../docs/local-qwen-service.md) for driver, OOM, port, served-name, model-download, and proxy checks |
 | `fixture load failed` | Verify PostgreSQL and MinIO privileges; rerunning `fixture` refreshes only the synthetic snapshot |
 | `verification failed` | Inspect the reported missing, extra, duplicate, or mismatched claim, fix the service/runtime issue, and rerun `e2e` |
 

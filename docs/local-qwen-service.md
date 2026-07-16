@@ -1,15 +1,15 @@
-# Local Qwen2.5-VL Service Guide
+# Local Qwen2.5-VL Service Setup Guide
 
-[中文版](local-qwen-service.zh.md)
+[Back to the repository](../README.md) · **English** | [简体中文](local-qwen-service.zh.md)
 
-This guide creates the loopback-only OpenAI-compatible multimodal service used by the multimodal claims triage demo. The checked-in `runtime.yml` expects:
+This guide creates the loopback-only OpenAI-compatible multimodal service shared by the [claims disposition](../claims-disposition/README.md) and [procurement compliance audit](../procurement-compliance-audit/README.md) demos. Both checked-in `runtime.yml` files expect:
 
 - API base URL: `http://127.0.0.1:8001/v1`
 - health URL: `http://127.0.0.1:8001/health`
 - served model name: `Qwen2.5-VL-3B-Instruct`
 - API key: `dummy`
 
-Keep the project environment and model-service environment separate. Install vLLM, PyTorch, and the model download tools into `$HOME/.venvs/claims-qwen`, not the project's `.venv`. This avoids dependency conflicts between vLLM/PyTorch/CUDA and Vane/Ray/custom DuckDB.
+Keep each project environment and the shared model-service environment separate. Install vLLM, PyTorch, and the model download tools into `$HOME/.venvs/qwen2.5-vl-service`, not either project's `.venv`. This avoids dependency conflicts between vLLM/PyTorch/CUDA and Vane/Ray/custom DuckDB.
 
 ## 1. Verified environment
 
@@ -26,7 +26,7 @@ The release validation used:
 | Model | `Qwen/Qwen2.5-VL-3B-Instruct` |
 | Model revision | `66285546d2b821cf421d4f5eb2576359d3770cd3` |
 
-The 16 GiB figure is this Demo's verified baseline, not a universal minimum for every Qwen/vLLM workload. Windows, macOS, WSL, ARM64, ROCm, Intel XPU, and CPU-only serving are not release-tested here.
+The 16 GiB figure is the verified baseline for these demos, not a universal minimum for every Qwen/vLLM workload. Windows, macOS, WSL, ARM64, ROCm, Intel XPU, and CPU-only serving are not release-tested here.
 
 ## 2. Preflight
 
@@ -53,8 +53,8 @@ A separate system CUDA Toolkit is not required. The `--torch-backend=auto` comma
 ## 3. Create the isolated service environment
 
 ```bash
-python3.12 -m venv "$HOME/.venvs/claims-qwen"
-source "$HOME/.venvs/claims-qwen/bin/activate"
+python3.12 -m venv "$HOME/.venvs/qwen2.5-vl-service"
+source "$HOME/.venvs/qwen2.5-vl-service/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install uv "huggingface_hub>=0.34,<2"
 uv pip install --python "$VIRTUAL_ENV/bin/python" \
@@ -75,7 +75,7 @@ Continue only when this prints `vLLM 0.25.1` and `GPU available True`.
 The weights are approximately 7.5 GB. Pinning the revision prevents upstream `main` changes from silently changing Demo behavior.
 
 ```bash
-source "$HOME/.venvs/claims-qwen/bin/activate"
+source "$HOME/.venvs/qwen2.5-vl-service/bin/activate"
 mkdir -p "$HOME/models/Qwen2.5-VL-3B-Instruct"
 hf download Qwen/Qwen2.5-VL-3B-Instruct \
   --revision 66285546d2b821cf421d4f5eb2576359d3770cd3 \
@@ -91,7 +91,7 @@ If Hugging Face requires authentication, run `hf auth login` and repeat the same
 Keep this foreground process running in a separate terminal:
 
 ```bash
-source "$HOME/.venvs/claims-qwen/bin/activate"
+source "$HOME/.venvs/qwen2.5-vl-service/bin/activate"
 CUDA_VISIBLE_DEVICES=0 vllm serve "$HOME/models/Qwen2.5-VL-3B-Instruct" \
   --served-model-name Qwen2.5-VL-3B-Instruct \
   --host 127.0.0.1 \
@@ -106,7 +106,7 @@ CUDA_VISIBLE_DEVICES=0 vllm serve "$HOME/models/Qwen2.5-VL-3B-Instruct" \
 
 The first start loads several gigabytes of weights. Wait until the process listens on `127.0.0.1:8001`.
 
-Do not change the host to `0.0.0.0` and expose this Demo server directly to the public internet. Some non-`/v1` operational vLLM endpoints are not fully protected by the API key. Public deployment requires a reverse proxy, TLS, and production authentication, which are outside this Demo.
+Do not change the host to `0.0.0.0` and expose this demo server directly to the public internet. Some non-`/v1` operational vLLM endpoints are not fully protected by the API key. Public deployment requires a reverse proxy, TLS, and production authentication, which are outside these demos.
 
 ## 6. Run all three service checks
 
@@ -133,59 +133,85 @@ The returned `data[].id` must contain `Qwen2.5-VL-3B-Instruct`.
 
 ### 6.3 Real image request
 
-The OpenAI client sends this multimodal request to `/v1/chat/completions`. First install the project by following the root [README](../README.md), then run from the project root:
+This self-contained request creates a small red PNG in memory and sends it to `/v1/chat/completions`. It requires only Python 3.12 and can run from any directory:
 
 ```bash
-source .venv/bin/activate
-python - <<'PY'
+python3.12 - <<'PY'
 import base64
-from pathlib import Path
+import json
+import struct
+import zlib
+from urllib.request import Request, urlopen
 
-from openai import OpenAI
 
-image_path = Path(
-    "src/claims_disposition_sql_pipeline/assets/clean_vehicle.jpg"
+def png_chunk(kind: bytes, data: bytes) -> bytes:
+    checksum = zlib.crc32(kind + data)
+    return (
+        struct.pack(">I", len(data))
+        + kind
+        + data
+        + struct.pack(">I", checksum)
+    )
+
+
+width = height = 64
+scanlines = b"".join(
+    b"\x00" + b"\xff\x00\x00" * width for _ in range(height)
 )
-image_url = "data:image/jpeg;base64," + base64.b64encode(
-    image_path.read_bytes()
-).decode("ascii")
-client = OpenAI(
-    api_key="dummy",
-    base_url="http://127.0.0.1:8001/v1",
-    timeout=120.0,
+image = (
+    b"\x89PNG\r\n\x1a\n"
+    + png_chunk(
+        b"IHDR",
+        struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0),
+    )
+    + png_chunk(b"IDAT", zlib.compress(scanlines))
+    + png_chunk(b"IEND", b"")
 )
-response = client.chat.completions.create(
-    model="Qwen2.5-VL-3B-Instruct",
-    messages=[
+image_url = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+payload = {
+    "model": "Qwen2.5-VL-3B-Instruct",
+    "messages": [
         {
             "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": "Describe the visible vehicle in one short sentence.",
+                    "text": "What is the dominant color? Return one lowercase English word.",
                 },
                 {"type": "image_url", "image_url": {"url": image_url}},
             ],
         }
     ],
-    temperature=0,
-    max_tokens=64,
+    "temperature": 0,
+    "max_tokens": 16,
+}
+request = Request(
+    "http://127.0.0.1:8001/v1/chat/completions",
+    data=json.dumps(payload).encode("utf-8"),
+    headers={
+        "Authorization": "Bearer dummy",
+        "Content-Type": "application/json",
+    },
+    method="POST",
 )
-content = response.choices[0].message.content
-assert content and content.strip(), content
+with urlopen(request, timeout=120) as response:
+    result = json.load(response)
+content = result["choices"][0]["message"]["content"]
+assert content and "red" in content.casefold(), content
 print(content)
 PY
 ```
 
-After all checks pass, return to the project root and run:
+After all checks pass, run the E2E command from the demo you want to validate:
 
 ```bash
+cd claims-disposition  # or: cd procurement-compliance-audit
 python scripts/run_demo.py e2e
 ```
 
 ## 7. Stop and restart
 
-Press `Ctrl+C` in the foreground service terminal to stop it. To restart, activate `$HOME/.venvs/claims-qwen` and repeat the command in section 5. You do not need to reinstall packages or download the model again.
+Press `Ctrl+C` in the foreground service terminal to stop it. To restart, activate `$HOME/.venvs/qwen2.5-vl-service` and repeat the command in section 5. You do not need to reinstall packages or download the model again.
 
 ## 8. Troubleshooting
 
@@ -193,13 +219,13 @@ Press `Ctrl+C` in the foreground service terminal to stop it. To restart, activa
 | --- | --- |
 | `torch.cuda.is_available()` is `False` | Check `nvidia-smi`; recreate the service environment and let `uv --torch-backend=auto` select the backend |
 | `CUDA out of memory` | Stop unrelated GPU processes; keep `--max-model-len 4096`; reduce `--gpu-memory-utilization` if required |
-| Port 8001 is occupied | Use `ss -ltnp` to identify the owner, or change both the service command and `runtime.yml` |
+| Port 8001 is occupied | Use `ss -ltnp` to identify the owner, or change both the service command and the affected demo's `runtime.yml` |
 | `/health` cannot connect | Confirm vLLM is still running, model loading has completed, and it listens on `127.0.0.1:8001` |
 | `/v1/models` has a different ID | Restore `--served-model-name Qwen2.5-VL-3B-Instruct` |
 | Model download stopped | Repeat the same pinned `hf download --revision ... --local-dir ...` command |
-| A proxy intercepts loopback traffic | Add `localhost,127.0.0.1,::1` to `NO_PROXY`; the project launcher also clears proxy variables for the loopback AI URL |
+| A proxy intercepts loopback traffic | Add `localhost,127.0.0.1,::1` to `NO_PROXY`; both project launchers also clear proxy variables for the loopback AI URL |
 
-Before upgrading vLLM, the model revision, served name, or port, update this guide and `runtime.yml`, then repeat the real E2E validation. Do not replace pinned versions with floating versions without validation.
+Before upgrading vLLM, the model revision, served name, or port, update this guide and both `runtime.yml` files, then repeat the real E2E validation. Do not replace pinned versions with floating versions without validation.
 
 ## Official references
 

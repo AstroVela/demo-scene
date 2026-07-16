@@ -91,7 +91,7 @@ pipeline 运行时不会再读取 `fixtures/`；该目录只为 `fixture` 命令
 
 ## 准备本地 Qwen 服务
 
-模型服务必须使用独立环境。NVIDIA、vLLM、模型下载、启动和排错步骤见[本地 Qwen2.5-VL 服务搭建指南](local-qwen-service.zh.md)。
+模型服务必须使用独立环境。NVIDIA、vLLM、模型下载、启动和排错步骤见共享的[本地 Qwen2.5-VL 服务搭建指南](../../docs/local-qwen-service.zh.md)。
 
 验证服务合同：
 
@@ -246,7 +246,7 @@ PostgreSQL/MinIO 来源合同和业务 SQL 保持不变。两种模式都已在�
 | 缺少直接依赖 | 执行 `python -m pip install -r requirements.txt` 和 `python -m pip check` |
 | PostgreSQL 连接、鉴权或表初始化失败 | 检查 DSN、database/role、端口，以及 schema/table 的读写权限 |
 | MinIO 连接、鉴权或对象读取失败 | 检查 endpoint、HTTP/TLS、access key，以及 bucket 的 list/read/write/delete 权限 |
-| Qwen health 或图片请求失败 | 按照[本地 Qwen 指南](local-qwen-service.zh.md)检查端口、driver、OOM、模型名和代理 |
+| Qwen health 或图片请求失败 | 按照[本地 Qwen 指南](../../docs/local-qwen-service.zh.md)检查端口、driver、OOM、模型名和代理 |
 | 输出不是三条 finding | 检查终端错误和 Qwen 响应；默认 Fixture 的 OCR 或 AI confidence 没有达到门槛 |
 
 ## 精确运行时标识

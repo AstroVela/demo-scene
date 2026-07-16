@@ -175,7 +175,7 @@ Both images must pass OCR and reach Qwen. Invalid response contracts fail the ru
 ## Documentation and data policy
 
 - [Operational runbook](docs/runbook.md)
-- [Local Qwen2.5-VL service guide (Chinese)](docs/local-qwen-service.zh.md)
+- [Local Qwen2.5-VL service guide](../docs/local-qwen-service.md) ([简体中文](../docs/local-qwen-service.zh.md))
 - [Read-only intermediate queries](queries.sql)
 - [Chinese architecture diagram](docs/vane-procurement-audit-data-flow.png)
 

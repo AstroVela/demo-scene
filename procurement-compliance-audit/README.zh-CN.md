@@ -175,7 +175,7 @@ procurement-compliance-audit/
 ## 文档与数据规范
 
 - [运行手册](docs/runbook.zh-CN.md)
-- [本地 Qwen2.5-VL 服务搭建指南](docs/local-qwen-service.zh.md)
+- [本地 Qwen2.5-VL 服务搭建指南](../docs/local-qwen-service.zh.md)
 - [只读中间 Relation 查询](queries.sql)
 - [英文架构图](docs/vane-procurement-audit-data-flow.en.png)
 

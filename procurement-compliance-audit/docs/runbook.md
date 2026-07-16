@@ -91,7 +91,7 @@ The runtime pipeline never reads `fixtures/`; that directory is only a reproduci
 
 ## Prepare the local Qwen service
 
-The model server must use a separate environment. Follow the checked-in [Qwen2.5-VL setup guide (Chinese)](local-qwen-service.zh.md) for NVIDIA, vLLM, model download, startup, and troubleshooting.
+The model server must use a separate environment. Follow the shared [Qwen2.5-VL setup guide](../../docs/local-qwen-service.md) for NVIDIA, vLLM, model download, startup, and troubleshooting.
 
 Verify the service contract:
 
@@ -246,7 +246,7 @@ The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the s
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
 | PostgreSQL connection, authentication, or table initialization failure | Check the DSN, database/role, port, and schema/table read/write permissions |
 | MinIO connection, authentication, or object-read failure | Check endpoint, HTTP/TLS, access key, and bucket list/read/write/delete permissions |
-| Qwen health or image request fails | Use the [Qwen guide](local-qwen-service.zh.md) to check port, driver, OOM, model name, and proxy settings |
+| Qwen health or image request fails | Use the [Qwen guide](../../docs/local-qwen-service.md) to check port, driver, OOM, model name, and proxy settings |
 | Output does not contain three findings | Inspect the terminal error and Qwen response; the default fixture's OCR or AI confidence did not meet its threshold |
 
 ## Exact runtime identifiers

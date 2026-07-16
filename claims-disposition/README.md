@@ -178,7 +178,7 @@ Missing material, uncertain evidence, conflicting photos, an unclear target vehi
 ## Documentation and data policy
 
 - [Operational runbook](docs/runbook.md)
-- [Local Qwen2.5-VL service guide](docs/local-qwen-service.md)
+- [Local Qwen2.5-VL service guide](../docs/local-qwen-service.md)
 - [Chinese architecture diagram](docs/vane-claims-data-flow.png)
 
 All claims, documents, and identifiers are synthetic. Do not commit real claims, customer photos, private documents, production credentials, model weights, or generated runtime data.
