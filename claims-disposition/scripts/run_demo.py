@@ -91,8 +91,12 @@ def validate_runtime_api(vane_module: object, duckdb_module: object) -> None:
             "real Vane runtime is missing callable API: "
             + ", ".join(f"vane.{name}" for name in missing)
         )
-    if not callable(getattr(getattr(vane_module, "ai", None), "prompt", None)):
-        raise _runtime_error("real Vane runtime is missing callable vane.ai.prompt")
+    ai_module = getattr(vane_module, "ai", None)
+    for name in ("prompt", "load_provider"):
+        if not callable(getattr(ai_module, name, None)):
+            raise _runtime_error(
+                f"real Vane runtime is missing callable vane.ai.{name}"
+            )
     if not hasattr(duckdb_module, "ray_cxx"):
         raise _runtime_error("real Vane runtime DuckDB is missing duckdb.ray_cxx")
 

@@ -30,7 +30,7 @@ def _complete_vane_api() -> SimpleNamespace:
         cls=lambda: None,
         attach_function=lambda: None,
         configure=lambda: None,
-        ai=SimpleNamespace(prompt=lambda: None),
+        ai=SimpleNamespace(prompt=lambda: None, load_provider=lambda: None),
     )
 
 
@@ -159,6 +159,18 @@ def test_launcher_rejects_missing_ai_prompt():
     with pytest.raises(RuntimeError, match=r"vane\.ai\.prompt"):
         launcher.validate_runtime_api(
             vane_without_prompt,
+            SimpleNamespace(ray_cxx=True),
+        )
+
+
+def test_launcher_rejects_missing_ai_provider_loader():
+    launcher = _load_launcher()
+    vane_without_loader = _complete_vane_api()
+    vane_without_loader.ai = SimpleNamespace(prompt=lambda: None)
+
+    with pytest.raises(RuntimeError, match=r"vane\.ai\.load_provider"):
+        launcher.validate_runtime_api(
+            vane_without_loader,
             SimpleNamespace(ray_cxx=True),
         )
 

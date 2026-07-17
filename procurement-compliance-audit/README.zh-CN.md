@@ -15,16 +15,18 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，并挂载为 SQL 可直接调用的有状态表达式；严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 `vane.ai.prompt` AI Function 调用。仓库中的真实 RapidOCR 流程默认使用 `ray` Runner，让原生 ONNX 引擎在隔离的 Actor worker 内初始化。
+Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 Vane AI API 调用。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上执行一次真实 RapidOCR 并把不可变结果暴露给 SQL；Ray 将 OCR Worker 挂载为有状态表达式，并通过 `vane.ai.prompt` 调用 Qwen。
 
 ## 架构
 
 ![Vane 招采合规审计数据流程图](docs/vane-procurement-audit-data-flow.png)
 
+图中展示两种 Runner 共用的逻辑 Relation 边界；Local 与 Ray 的 OCR、AI 执行位置差异见下文。
+
 ```text
 PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
   -> 类型明确的评分和证据 Relation
-  -> 有状态 RapidOCR
+  -> RapidOCR（Driver 本地查询或 Ray Actor）
   -> Qwen 多模态事实提取
   -> 严格 AI 响应合同
   -> SQL 评分指标和三条审计规则
@@ -33,7 +35,7 @@ PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
 
 1. 从 PostgreSQL 读取项目、供应商、专家评分和证据文件元数据，并根据其中的 `bucket/object_key` 从 MinIO 读取推荐记录和评审会议纪要两张 PNG 图片。
 2. 校验项目、供应商、4 位专家对 3 家供应商的完整评分矩阵，以及证据角色和 MinIO locator，确保进入后续流程的数据结构完整且来源可信。
-3. 在 `int_evidence_ocr_udf.sql` 中直接调用挂载的有状态 `evidence_ocr_json` 表达式，再由 `int_evidence_ocr.sql` 解析图片文字、OCR 状态和置信度；只有满足质量要求的证据才会进入多模态分析，Actor 会复用同一个 RapidOCR 引擎。
+3. 在 `int_evidence_ocr_udf.sql` 中直接调用 `evidence_ocr_json`，再由 `int_evidence_ocr.sql` 解析图片文字、OCR 状态和置信度；只有满足质量要求的证据才会进入多模态分析。Local 使用 Driver 持有的一份 RapidOCR 引擎与不可变结果查询，Ray 使用可复用的有状态 Actor；两条路径返回相同的 OCR JSON 合同。
 4. 将图片、OCR 文本和供应商上下文发送给 Qwen，提取“专家推荐了哪家供应商、是否参加评审、是否回避、对应证据原文和置信度”等结构化事实，并通过严格的 JSON 合同和证据角色进行校验。
 5. 使用确定性 SQL 对比相关专家评分与其他专家平均分，并分别计算包含和剔除该专家时的供应商排名，生成“存在关联且未回避”“评分显著偏高”“剔除该专家后中标结果改变”三类审计发现。
 6. 最终生成 `audit_findings.jsonl` 和 `audit_summary.jsonl`；证据充分时给出 `review_required` 及可复核的指标、阈值和证据引用，证据不足时明确标记为 `insufficient_evidence`，而不是让模型直接作出违规结论。
@@ -45,6 +47,8 @@ Demo 从公共 PyPI 安装 Vane（`pip install vane-ai`），并需要正在运�
 ```bash
 python scripts/run_demo.py e2e
 ```
+
+`runtime.yml` 默认是 `runner: local`。如需验证分布式 Actor 和 AI Relation 路径，可改为 `runner: ray` 并连接 Ray 集群；两种模式都已使用真实 fixture、OCR 和 Qwen 服务跑通。
 
 `e2e` 先把仓库中的合成 seed 数据写入 PostgreSQL/MinIO，再让 pipeline 只从这两个服务读取输入，并执行真实 OCR 和 Qwen 推理。没有 AI mock fallback。运行后生成：
 
@@ -58,7 +62,7 @@ output/audit_summary.jsonl   # 1 行
 ```text
 <项目根目录>/
 ├── runtime.yml
-│   # 配置 Vane Runner（默认 Ray）、PostgreSQL、MinIO、OCR、
+│   # 配置 Vane Runner（默认 Local）、PostgreSQL、MinIO、OCR、
 │   # Qwen 和 JSONL 输出目录。
 │
 ├── scripts/
@@ -102,20 +106,20 @@ output/audit_summary.jsonl   # 1 行
 │   │   # 整条八节点 DAG 的主编排器：读取来源、执行 OCR 和 AI、
 │   │   # 运行评分 SQL、生成两个 Mart，并发布最终 JSONL。
 │   │   └── 【Vane】通过 vane.configure 选择 Local 或 Ray Runner；
-│   │       在 SQL 中直接执行有状态 OCR 和 AI 响应校验，
-│   │       并通过 Relation.write_parquet 统一 SQL 与 AI 阶段的 Runner 物化路径。
+│   │       将 Local OCR 结果或 Ray OCR Actor 暴露给同一个 SQL 调用，
+│   │       并通过 Relation.write_parquet 物化交给 Runner 的 SQL 阶段。
 │   │
 │   ├── vane_functions.py
 │   │   # OCR 输出规范化和严格的 AI JSON 合同校验。
 │   │   └── 【Vane】validate_audit_fact_json 是无状态 Function；
-│   │       EvidenceOcrActor 挂载为有状态 evidence_ocr_json SQL 表达式，
-│   │       并复用同一个 RapidOCR 引擎。
+│   │       EvidenceOcrActor 在 Local 直接执行，在 Ray 挂载为有状态
+│   │       evidence_ocr_json SQL 表达式。
 │   │
 │   ├── ai.py
 │   │   # 将 OCR 文本、供应商别名和图片组合成多模态请求，
 │   │   # 校验模型事实必须与可信证据角色一致，合同失败时重试一次。
-│   │   └── 【Vane】通过 vane.ai.prompt 调用 Qwen，并通过当前
-│   │       Runner 物化每份证据的模型响应。
+│   │   └── 【Vane】Local 使用公共 provider API，Ray 使用 vane.ai.prompt，
+│   │       两者保持相同的请求、重试与响应表合同。
 │   │
 │   ├── sql/
 │   │   ├── staging/
@@ -157,7 +161,7 @@ output/audit_summary.jsonl   # 1 行
     # 覆盖来源合同、OCR Actor、AI 合同、SQL DAG、Runner 编排和输出发布。
 ```
 
-执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Vane 把可复用 OCR Actor 和响应校验器挂载为 SQL 表达式；仓库配置在 Ray 上执行这些直接 UDF 与 AI Relation 边界。每次 UDF 调用都位于清晰可见的 `*_udf.sql` 节点；下游 SQL 负责解析、可信角色过滤、评分偏差、排名变化和审计规则。Python 只保留来源/服务 I/O、AI 请求绑定与重试、Runner 物化和原子发布。
+执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Local 将原生 OCR 和异步 provider client 保留在 Driver；Ray 挂载可复用 OCR Actor 并通过 `vane.ai.prompt` 执行 AI。SQL UDF 边界与类型化输出保持一致。每次 UDF 调用都位于清晰可见的 `*_udf.sql` 节点；下游 SQL 负责解析、可信角色过滤、评分偏差、排名变化和审计规则。
 
 ## 审计逻辑与边界
 

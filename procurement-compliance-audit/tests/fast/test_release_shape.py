@@ -88,6 +88,7 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
             "Qwen2.5-VL-3B-Instruct",
             "runner: local",
             "runner: ray",
+            "vane.ai.load_provider",
         ):
             assert required in runbook, f"{name} is missing {required!r}"
         assert obsolete_index not in runbook.lower()

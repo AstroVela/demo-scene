@@ -64,7 +64,7 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `psycopg` | Read and initialize PostgreSQL raw tables |
 | `minio` | Read and initialize raw material objects in MinIO |
-| `rapidocr`, `onnxruntime` | Stateful CPU OCR actor |
+| `rapidocr`, `onnxruntime` | CPU OCR: driver-owned on Local, stateful Actor on Ray |
 | `pillow` | Image reads |
 | `pyarrow` | Relation/Python data boundary |
 | `pyyaml` | Strict `runtime.yml` loading |
@@ -165,7 +165,7 @@ All names, companies, and documents are synthetic. The score matrix guarantees t
 - `EXP-001` gives Jingwei 98 while other experts average 80, an 18-point deviation;
 - `SUP-ZJ-002` ranks first after removing `EXP-001`.
 
-At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`, `expert_scores`, and `evidence_files` tables plus the MinIO bucket `procurement-compliance-audit-fixtures`. `evidence_files.bucket/object_key` is the trusted PostgreSQL-to-MinIO locator. The pipeline, OCR actor, and AI request builder never read local paths.
+At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`, `expert_scores`, and `evidence_files` tables plus the MinIO bucket `procurement-compliance-audit-fixtures`. `evidence_files.bucket/object_key` is the trusted PostgreSQL-to-MinIO locator. The pipeline, OCR implementation, and AI request builder never read local paths.
 
 ## Relation contracts
 
@@ -216,7 +216,7 @@ The checked-in `runtime.yml` defines:
 
 | Setting | Default |
 | --- | --- |
-| Runner | `ray` |
+| Runner | `local` |
 | PostgreSQL raw tables | `procurement_audit_raw.projects`, `suppliers`, `expert_scores`, `evidence_files` |
 | MinIO | `127.0.0.1:9000`, bucket `procurement-compliance-audit-fixtures` |
 | Output directory | `output` |
@@ -226,29 +226,35 @@ The checked-in `runtime.yml` defines:
 The checked-in configuration uses:
 
 ```yaml
-runner: ray
+runner: local
 ```
 
-The SQL and Relation pipeline remains Runner-independent and still accepts
-`runner: local`, but the real RapidOCR/ONNX path for the public Vane release was
-validated on Ray. The OCR engine is initialized lazily inside its isolated
-Actor worker instead of being serialized from the driver. The launcher also
-sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied
-another value, giving native OCR workers enough time to shut down cleanly.
+The checked-in value is `runner: local`; change it to `runner: ray` for the
+distributed path. Both modes were verified end to end with public
+`vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
 
-PostgreSQL/MinIO source contracts remain unchanged. The pipeline attaches
-`EvidenceOcrActor` as `evidence_ocr_json(bucket, object_key)`;
-`int_evidence_ocr_udf.sql` calls it once per image as a direct Runner
-projection, and `int_evidence_ocr.sql` parses the materialized JSON. The
-response validator follows the same `int_conflict_validation_udf.sql` then
+On Local, the pipeline creates one `EvidenceOcrActor` implementation on the
+driver, processes every trusted evidence locator once, and attaches the
+immutable results as `evidence_ocr_json(bucket, object_key)`. It also
+instantiates the configured model through Vane's public provider API and
+reuses one async client on the driver. This keeps native ONNX sessions and the
+async provider client outside LocalRunner subprocess boundaries.
+
+On Ray, `EvidenceOcrActor` is attached as the stateful
+`evidence_ocr_json(bucket, object_key)` expression and Qwen runs through
+`vane.ai.prompt`. The OCR engine initializes lazily inside its isolated Actor
+worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the
+operator supplied another value, giving native Ray OCR workers enough time to
+shut down cleanly.
+
+In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per
+image and `int_evidence_ocr.sql` parses the same materialized JSON. Response
+validation keeps the `int_conflict_validation_udf.sql` then
 `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary
-Parquet files, `Relation.write_parquet()` dispatches each direct UDF or AI
-relation through the active Runner, and results are registered in the driver's
-DuckDB catalog for the next pure SQL node. A real multi-node target cluster
-still requires its own infrastructure smoke test.
-
-The shared materializer uses the Runner-backed write API rather than a direct
-DuckDB export, so changing Runner does not change the relation boundary.
+Parquet files and Runner results are registered in the driver's DuckDB catalog
+for the next pure SQL node. Switching Runner changes execution placement, not
+SQL or output contracts. A real multi-node target cluster still requires its
+own infrastructure smoke test.
 
 ## Troubleshooting
 
@@ -274,7 +280,7 @@ DuckDB export, so changing Runner does not change the relation boundary.
 | DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
-Any identity or required Vane API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
+The required API surface includes `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.load_provider`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any identity or API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
 
 ## Data, credentials, and privacy
 

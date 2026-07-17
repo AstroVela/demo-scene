@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 import json
@@ -307,6 +308,61 @@ def _validate_response_for_request(
         )
 
 
+def _local_prompter(config: AiConfig) -> Any:
+    """Create Vane's public provider implementation for driver-local prompts."""
+
+    provider = vane.ai.load_provider(
+        config.provider,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        timeout=config.timeout_seconds,
+    )
+    return provider.get_prompter(
+        model=config.model,
+        system_message=AUDIT_FACT_SYSTEM_MESSAGE,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        on_error="raise",
+    ).instantiate()
+
+
+def _prompt_locally(
+    requests: list[EvidenceAiRequest],
+    config: AiConfig,
+) -> list[tuple[EvidenceAiRequest, str]]:
+    """Use Vane's provider API without LocalRunner's subprocess actor boundary."""
+
+    prompter = _local_prompter(config)
+    completed: list[tuple[EvidenceAiRequest, str]] = []
+    # Reuse one event loop because the provider owns one async HTTP client.
+    with asyncio.Runner() as async_runner:
+        for request in requests:
+            current_request = request
+            for attempt in range(2):
+                response = async_runner.run(
+                    prompter.prompt(
+                        (current_request.prompt_text, current_request.image_bytes)
+                    )
+                )
+                if not isinstance(response, str):
+                    raise EvidenceAiInputError(
+                        f"AI response for {request.file_id} must be a string"
+                    )
+                try:
+                    _validate_response_for_request(response, request)
+                except AuditFactContractError as exc:
+                    if attempt == 0:
+                        current_request = _retry_request(request)
+                        continue
+                    raise EvidenceAiInputError(
+                        f"AI response for {request.file_id} violated the audit fact "
+                        f"contract after two attempts: {exc}"
+                    ) from exc
+                completed.append((request, response))
+                break
+    return completed
+
+
 def build_evidence_ai_relation(
     ocr_rows: Iterable[Mapping[str, Any]],
     session: Any,
@@ -339,6 +395,14 @@ def build_evidence_ai_relation(
         )
 
     health_probe(config.ai)
+    if config.runner == "local":
+        table = _completed_table(_prompt_locally(requests, config.ai))
+        return (
+            session.from_arrow(table)
+            if result_factory is None
+            else result_factory(table)
+        )
+
     provider_options = vane.ai.OpenAIProviderOptions(
         base_url=config.ai.base_url,
         api_key=config.ai.api_key,
@@ -374,14 +438,15 @@ def build_evidence_ai_relation(
                 output_column="raw_response",
                 num_gpus=0,
             )
-            # Materialize through Relation.write_parquet when a Runner is configured.
+            # Materialize through Relation.write_parquet for RayRunner.
             if response_materializer is None:
                 response_rows = result.fetchall()
             else:
                 response_table = response_materializer(result)
                 if response_table.num_columns != 1:
                     raise EvidenceAiInputError(
-                        f"AI response for {request.file_id} must contain one string column"
+                        f"AI response for {request.file_id} must contain one "
+                        "string column"
                     )
                 response_rows = [
                     (value,) for value in response_table.column(0).to_pylist()

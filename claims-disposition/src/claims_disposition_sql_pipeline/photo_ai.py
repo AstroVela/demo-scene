@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
@@ -424,6 +425,40 @@ def _completed_requests_to_arrow(
     )
 
 
+def _prompt_locally(
+    requests: list[PhotoAiRequest],
+    config: AiConfig,
+) -> list[tuple[PhotoAiRequest, str]]:
+    """Use Vane's provider API without LocalRunner's subprocess actor boundary."""
+
+    provider = vane.ai.load_provider(
+        config.provider,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        timeout=config.timeout_seconds,
+    )
+    prompter = provider.get_prompter(
+        model=config.model,
+        system_message=DAMAGE_SYSTEM_MESSAGE,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+        on_error="raise",
+    ).instantiate()
+    completed: list[tuple[PhotoAiRequest, str]] = []
+    # Reuse one event loop because the provider owns one async HTTP client.
+    with asyncio.Runner() as async_runner:
+        for request_index, request in enumerate(requests):
+            response = async_runner.run(
+                prompter.prompt((request.prompt_text, request.image_bytes))
+            )
+            if not isinstance(response, str):
+                raise PhotoAiInputError(
+                    f"AI response row {request_index} must contain a string"
+                )
+            completed.append((request, response))
+    return completed
+
+
 def build_photo_ai_relation(
     material_rows: Iterable[Mapping[str, Any]],
     session: Any,
@@ -446,6 +481,14 @@ def build_photo_ai_relation(
 
     # Probe once before constructing any Vane multimodal relation.
     probe_qwen(config.ai)
+    if config.runner == "local":
+        table = _completed_requests_to_arrow(_prompt_locally(requests, config.ai))
+        return (
+            session.from_arrow(table)
+            if result_factory is None
+            else result_factory(table)
+        )
+
     provider_options = vane.ai.OpenAIProviderOptions(
         base_url=config.ai.base_url,
         api_key=config.ai.api_key,

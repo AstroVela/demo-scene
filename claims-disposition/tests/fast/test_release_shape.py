@@ -55,11 +55,14 @@ def test_runbooks_document_a_fresh_environment_and_all_services():
         "python scripts/run_demo.py run",
         "python scripts/run_demo.py verify",
         "python scripts/run_demo.py e2e",
+        "runner: local",
+        "runner: ray",
         "127.0.0.1:5432",
         "127.0.0.1:9000",
         "127.0.0.1:8001",
         "v1.6.0-dev1",
         "398033a962",
+        "vane.ai.load_provider",
     )
     obsolete_index = ".".join(("test", "pypi", "org"))
     for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):

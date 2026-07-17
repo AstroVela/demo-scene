@@ -118,8 +118,10 @@ def require_real_vane_runtime() -> None:
             "real Vane runtime is missing callable API: "
             + ", ".join(f"vane.{name}" for name in missing)
         )
-    if not callable(getattr(getattr(vane, "ai", None), "prompt", None)):
-        raise _runtime_error("real Vane runtime is missing vane.ai.prompt")
+    ai_module = getattr(vane, "ai", None)
+    for name in ("prompt", "load_provider"):
+        if not callable(getattr(ai_module, name, None)):
+            raise _runtime_error(f"real Vane runtime is missing vane.ai.{name}")
     _require_package_from_current_environment("vane", getattr(vane, "__file__", None))
     _require_package_from_current_environment(
         "duckdb", getattr(duckdb, "__file__", None)

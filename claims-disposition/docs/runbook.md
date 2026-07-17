@@ -68,7 +68,7 @@ python -m pip check
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `minio` | Object reads/writes and SHA-256 UDFs |
 | `psycopg[binary]` | PostgreSQL input, fixtures, and atomic publication |
-| `rapidocr`, `onnxruntime` | Stateful CPU OCR actor |
+| `rapidocr`, `onnxruntime` | CPU OCR: driver-owned on Local, stateful Actor on Ray |
 | `numpy`, `pillow` | Fixture images and image-quality calculations |
 | `pyarrow` | Relation/Python data boundary |
 | `pyyaml` | Strict `runtime.yml` loading |
@@ -161,7 +161,7 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 
 | Setting | Default |
 | --- | --- |
-| Runner | `ray` |
+| Runner | `local` |
 | PostgreSQL DSN | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
 | Raw relation | `claims_disposition_raw.claims` |
 | Output relation | `claims_disposition_output.claim_disposition` |
@@ -169,26 +169,32 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 | OCR | RapidOCR on CPU; required fields `claim_number`, `claimant_name`, `loss_date`; minimum mean confidence `0.70` |
 | AI | OpenAI provider; `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-The checked-in configuration uses `runner: ray`. The SQL and Relation pipeline
-remains Runner-independent and still accepts `runner: local`, but the real
-RapidOCR/ONNX path for the public Vane release was validated on Ray. The OCR
-engine is initialized lazily inside its isolated Actor worker instead of being
-serialized from the driver. The launcher also sets
-`VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied another
-value, giving native OCR workers enough time to shut down cleanly.
+The checked-in configuration uses `runner: local`; `runner: ray` selects the
+distributed path. Both modes were verified end to end with public
+`vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
 
-The pipeline attaches `DocumentOcrActor` as the stateful
-`document_ocr_json(bucket, object_key)` expression, and
-`int_claim_document_ocr_udf.sql` calls it once per eligible supporting
-document. Every `*_udf.sql` file is a direct UDF projection executed through
-`Relation.write_parquet()` by the active Vane Runner; the following pure SQL
-file parses, joins, classifies, or aggregates the materialized output.
-Driver-local inputs are staged as temporary Parquet files, results are
-registered back in the driver's DuckDB catalog, and the staging directory is
-deleted when the run finishes.
+On Local, the pipeline creates one `DocumentOcrActor` implementation on the
+driver, runs it once for every eligible supporting-document locator, and
+attaches the immutable results as
+`document_ocr_json(bucket, object_key)`. It also instantiates the configured
+model through Vane's public provider API and reuses one async client on the
+driver. This keeps the native ONNX sessions and async provider client outside
+LocalRunner subprocess boundaries.
 
-The shared materializer uses the Runner-backed write API rather than a direct
-DuckDB export, so changing Runner does not change the relation boundary.
+On Ray, `DocumentOcrActor` is attached as the stateful
+`document_ocr_json(bucket, object_key)` expression and Qwen runs through
+`vane.ai.prompt`. The OCR engine initializes lazily inside the isolated Actor
+worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the
+operator supplied another value, giving native Ray OCR workers enough time to
+shut down cleanly.
+
+In both modes, `int_claim_document_ocr_udf.sql` calls the same expression once
+per eligible document, every `*_udf.sql` file remains a direct Runner
+projection, and the following pure SQL file parses, joins, classifies, or
+aggregates the same materialized contract. Driver-local inputs are staged as
+temporary Parquet files and results are registered back in the driver's DuckDB
+catalog. Switching Runner changes execution placement, not SQL or output
+contracts.
 
 The loader validates YAML shape, SQL identifiers, loopback URLs, required values, and numeric ranges. Diagnostics avoid printing the complete PostgreSQL DSN, MinIO secret, or AI key. For a loopback AI URL, the launcher removes HTTP proxy variables and augments `NO_PROXY`/`no_proxy`.
 
@@ -257,7 +263,7 @@ The writer validates all nine columns, types, enums, confidence, and timestamps 
 | DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
-The launcher also requires `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any mismatch fails explicitly instead of silently falling back to ordinary DuckDB.
+The launcher also requires `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.load_provider`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any mismatch fails explicitly instead of silently falling back to ordinary DuckDB.
 
 ## Data, credentials, and privacy
 

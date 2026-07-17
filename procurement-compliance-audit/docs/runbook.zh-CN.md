@@ -64,7 +64,7 @@ python -m pip check
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `psycopg` | 读取并初始化 PostgreSQL 原始表 |
 | `minio` | 读取并初始化 MinIO 原始材料对象 |
-| `rapidocr`、`onnxruntime` | 有状态 CPU OCR Actor |
+| `rapidocr`、`onnxruntime` | CPU OCR：Local 由 Driver 持有，Ray 使用有状态 Actor |
 | `pillow` | 图片读取 |
 | `pyarrow` | Relation/Python 数据边界 |
 | `pyyaml` | 严格读取 `runtime.yml` |
@@ -165,7 +165,7 @@ python -m pytest tests/fast -q
 - `EXP-001` 给景维 98 分，其他专家平均 80 分，偏差为 18 分；
 - 剔除 `EXP-001` 后，`SUP-ZJ-002` 排名第一。
 
-运行时的权威来源是 PostgreSQL 的 `projects`、`suppliers`、`expert_scores`、`evidence_files` 四张表和 MinIO bucket `procurement-compliance-audit-fixtures`。`evidence_files.bucket/object_key` 是 PostgreSQL 到 MinIO 原始材料的可信 locator；pipeline、OCR Actor 和 AI request builder 都不读取本地路径。
+运行时的权威来源是 PostgreSQL 的 `projects`、`suppliers`、`expert_scores`、`evidence_files` 四张表和 MinIO bucket `procurement-compliance-audit-fixtures`。`evidence_files.bucket/object_key` 是 PostgreSQL 到 MinIO 原始材料的可信 locator；pipeline、OCR 实现和 AI request builder 都不读取本地路径。
 
 ## Relation 合同
 
@@ -216,7 +216,7 @@ Qwen 只返回文档类型、专家编号、供应商、推荐、参评、回避
 
 | 配置项 | 默认值 |
 | --- | --- |
-| Runner | `ray` |
+| Runner | `local` |
 | PostgreSQL 原始表 | `procurement_audit_raw.projects`、`suppliers`、`expert_scores`、`evidence_files` |
 | MinIO | `127.0.0.1:9000`，bucket `procurement-compliance-audit-fixtures` |
 | 输出目录 | `output` |
@@ -226,25 +226,31 @@ Qwen 只返回文档类型、专家编号、供应商、推荐、参评、回避
 仓库默认配置为：
 
 ```yaml
-runner: ray
+runner: local
 ```
 
-SQL 与 Relation Pipeline 仍与 Runner 解耦，也接受 `runner: local`，但公共 Vane
-发布包的真实 RapidOCR/ONNX 路径是在 Ray 上完成验证的。OCR 引擎会在隔离的
-Actor worker 内延迟初始化，不会从 Driver 序列化原生 ONNX session。Launcher
-还会在操作者没有显式设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为
-原生 OCR worker 留出足够的清理时间。
+仓库实际默认值是 `runner: local`；改成 `runner: ray` 即可选择分布式路径。两种
+模式均已使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端
+验证。
 
-PostgreSQL/MinIO 来源合同保持不变。Pipeline 将 `EvidenceOcrActor` 挂载为
-`evidence_ocr_json(bucket, object_key)`；`int_evidence_ocr_udf.sql` 将它作为直接
-Runner 投影对每张图片调用一次，`int_evidence_ocr.sql` 再解析物化 JSON。响应
-校验同样采用 `int_conflict_validation_udf.sql → int_conflict_facts.sql` 的分层。
-Driver 本地输入临时落为 Parquet，`Relation.write_parquet()` 将每个直接 UDF 或
-AI Relation 交给当前 Runner，结果注册回 Driver 的 DuckDB catalog 供下一段纯
-SQL 使用。真实多节点目标集群仍需单独做基础设施 smoke test。
+Local 模式下，Pipeline 在 Driver 上创建一份 `EvidenceOcrActor` 实现，对每个
+可信证据 locator 执行一次，再将不可变结果挂载为
+`evidence_ocr_json(bucket, object_key)`。模型通过 Vane 公共 provider API 实例化，
+并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client
+不会跨越 LocalRunner 的 subprocess 边界。
 
-公共物化器采用 Runner-backed write API，而不是回退到 DuckDB 直接导出，因此
-切换 Runner 不会改变 Relation 边界。
+Ray 模式下，`EvidenceOcrActor` 挂载为有状态
+`evidence_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。
+OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式
+设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker
+留出足够的清理时间。
+
+两种模式下，`int_evidence_ocr_udf.sql` 都对每张图片调用相同表达式，
+`int_evidence_ocr.sql` 也解析相同的物化 JSON。响应校验仍采用
+`int_conflict_validation_udf.sql → int_conflict_facts.sql` 分层。Driver 输入临时
+落为 Parquet，Runner 结果注册回 Driver 的 DuckDB catalog 供下一段纯 SQL 使用。
+切换 Runner 只改变执行位置，不改变 SQL 与输出合同。真实多节点目标集群仍需
+单独做基础设施 smoke test。
 
 ## 排错
 
@@ -270,7 +276,7 @@ SQL 使用。真实多节点目标集群仍需单独做基础设施 smoke test�
 | DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
-任一标识或必需 Vane API 不匹配都会启动失败，不会静默回退到普通 DuckDB。升级 Runtime 时必须同步更新 Launcher 和真实端到端验收。
+必需 API 包括 `vane.func`、`vane.cls`、`vane.attach_function`、`vane.configure`、`vane.ai.load_provider`、`vane.ai.prompt` 和 `duckdb.ray_cxx`。任一标识或 API 不匹配都会启动失败，不会静默回退到普通 DuckDB。升级 Runtime 时必须同步更新 Launcher 和真实端到端验收。
 
 ## 数据、凭据和隐私
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -191,7 +191,11 @@ def probe_runtime(config: RuntimeConfig) -> None:
         raise RuntimeConnectionError("; ".join(failures))
 
 
-def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
+def attach_runtime_functions(
+    connection: Any,
+    config: RuntimeConfig,
+    local_ocr_results: Mapping[tuple[str, str], str] | None = None,
+) -> None:
     """Attach the release-facing stateless and stateful SQL functions."""
 
     vane.attach_function(
@@ -201,13 +205,46 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
         parameters=["VARCHAR"],
         replace=True,
     )
+    if config.runner == "ray":
+        ocr_function = EvidenceOcrActor(config.minio)
+        return_dtype = None
+    else:
+        if local_ocr_results is None:
+            raise ValueError("local OCR results are required for the local Runner")
+        results = dict(local_ocr_results)
+
+        def ocr_function(bucket: str, object_key: str) -> str:
+            return results[(bucket, object_key)]
+
+        return_dtype = "VARCHAR"
     vane.attach_function(
-        EvidenceOcrActor(config.minio),
+        ocr_function,
         connection=connection,
         alias="evidence_ocr_json",
         parameters=["VARCHAR", "VARCHAR"],
+        return_dtype=return_dtype,
         replace=True,
     )
+
+
+def build_local_evidence_ocr_results(
+    source: SourceBundle,
+    config: RuntimeConfig,
+) -> dict[tuple[str, str], str]:
+    """Run native OCR once on the driver before LocalRunner fragment execution."""
+
+    locators = sorted(
+        {
+            (row["bucket"], row["object_key"])
+            for row in source.evidence.to_pylist()
+            if row["media_type"] == "image/png"
+        }
+    )
+    ocr = EvidenceOcrActor(config.minio)
+    return {
+        (bucket, object_key): ocr(bucket, object_key)
+        for bucket, object_key in locators
+    }
 
 
 def _sql_stage_parts(path: Path) -> tuple[str, str]:
@@ -261,10 +298,13 @@ def run_pipeline(
     *,
     configure_runner: Callable[..., Any] = vane.configure,
     runtime_probe: Callable[[RuntimeConfig], None] = probe_runtime,
-    runtime_function_attacher: Callable[[Any, RuntimeConfig], None] = attach_runtime_functions,
+    runtime_function_attacher: Callable[..., None] = attach_runtime_functions,
     ai_relation_builder: Callable[..., Any] = build_evidence_ai_relation,
     connection_factory: Callable[[], Any] = duckdb.connect,
     source_loader: Callable[[RuntimeConfig], SourceBundle] = read_source_bundle,
+    local_ocr_result_builder: Callable[
+        [SourceBundle, RuntimeConfig], Mapping[tuple[str, str], str]
+    ] = build_local_evidence_ocr_results,
     output_publisher: Callable[..., PublishedOutputs] = write_outputs,
     relation_materializer: Callable[[Any], pa.Table] = materialize_relation,
 ) -> PipelineResult:
@@ -275,6 +315,11 @@ def run_pipeline(
     # Fail before computation if either PostgreSQL or MinIO is unavailable.
     runtime_probe(config)
     source = source_loader(config)
+    local_ocr_results = (
+        local_ocr_result_builder(source, config)
+        if config.runner == "local"
+        else None
+    )
     executed: list[str] = []
     with TemporaryDirectory(
         prefix=f"procurement-audit-{config.runner}-"
@@ -285,13 +330,13 @@ def run_pipeline(
         try:
             # Register the validated PostgreSQL snapshot on the driver.
             _register_inputs(connection, source)
-            runtime_function_attacher(runner_connection, config)
+            runtime_function_attacher(runner_connection, config, local_ocr_results)
             # Normalize the PostgreSQL inputs on the driver.
             for relation_name, sql_path in PRE_AI_STAGES:
                 _execute_sql_file(connection, sql_path)
                 executed.append(relation_name)
-            # Keep the stateful Actor call as a direct Runner SQL projection;
-            # parse its JSON contract in the following pure SQL relation.
+            # Keep OCR as a direct Runner SQL projection and parse its JSON
+            # contract in the following pure SQL relation.
             _execute_runner_sql_file(
                 connection,
                 runner_connection,

@@ -1,6 +1,6 @@
 version: 1
-# RapidOCR runs in isolated Ray workers; the relation pipeline is unchanged.
-runner: ray
+# Switch between Local and Ray without changing the relation pipeline.
+runner: local
 output_dir: output
 
 # PostgreSQL stores project, supplier, score, and evidence metadata.

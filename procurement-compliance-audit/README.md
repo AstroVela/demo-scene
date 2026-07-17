@@ -15,16 +15,18 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls` and attached as a SQL-callable stateful expression. The strict response validator is registered with `@vane.func`, and Qwen is invoked through the `vane.ai.prompt` AI Function. The checked-in real RapidOCR flow uses the `ray` Runner so the native ONNX engine is initialized inside an isolated Actor worker.
+Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls`, the strict response validator with `@vane.func`, and Qwen is accessed through Vane's AI APIs. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local executes real RapidOCR once on the driver and exposes immutable results to SQL; Ray attaches the OCR worker as a stateful expression and invokes Qwen through the `vane.ai.prompt` AI Function.
 
 ## Architecture
 
 ![Vane procurement compliance audit data flow](docs/vane-procurement-audit-data-flow.en.png)
 
+The diagram shows the shared logical Relation boundaries; Local and Ray place OCR and AI execution differently as described below.
+
 ```text
 PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
   -> typed score and evidence relations
-  -> stateful RapidOCR
+  -> RapidOCR (driver-local lookup or Ray actor)
   -> Qwen multimodal fact extraction
   -> strict AI response contract
   -> SQL score metrics and three audit rules
@@ -33,7 +35,7 @@ PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
 
 1. Reads project, supplier, expert-score, and evidence-file metadata from PostgreSQL, then uses the stored `bucket/object_key` locators to read the recommendation record and committee minutes as two PNG images from MinIO.
 2. Validates the project, suppliers, the complete four-expert-by-three-supplier score matrix, evidence roles, and MinIO locators so that downstream processing receives complete, trusted source data.
-3. Calls the attached stateful `evidence_ocr_json` expression directly in `int_evidence_ocr_udf.sql`, then parses image text, OCR status, and confidence in `int_evidence_ocr.sql`; only quality-qualified evidence reaches multimodal analysis, and the Actor reuses one RapidOCR engine.
+3. Calls `evidence_ocr_json` directly in `int_evidence_ocr_udf.sql`, then parses image text, OCR status, and confidence in `int_evidence_ocr.sql`; only quality-qualified evidence reaches multimodal analysis. Local uses one driver-owned RapidOCR engine and an immutable result lookup, while Ray uses the reusable stateful Actor. Both return the same OCR JSON contract.
 4. Sends the images, OCR text, and supplier context to Qwen to extract structured facts such as which supplier the expert recommended, whether the expert participated or recused, the supporting evidence text, and confidence. A strict JSON contract and the trusted evidence role validate those facts.
 5. Uses deterministic SQL to compare the related expert's score with the other experts' average and rank suppliers both with and without that expert, producing three findings: an undisclosed relationship without recusal, a materially elevated score, and a changed award result after removing the expert.
 6. Produces `audit_findings.jsonl` and `audit_summary.jsonl`. With sufficient evidence, the result is `review_required` with reviewable metrics, thresholds, and evidence references; insufficient evidence is explicitly reported as `insufficient_evidence` instead of allowing the model to declare a violation.
@@ -45,6 +47,8 @@ The demo installs Vane from public PyPI (`pip install vane-ai`) and requires run
 ```bash
 python scripts/run_demo.py e2e
 ```
+
+`runtime.yml` defaults to `runner: local`. Set it to `runner: ray` and connect a Ray cluster to exercise the distributed Actor and AI Relation path; both modes have been verified with the real fixture, OCR, and Qwen service.
 
 `e2e` seeds synthetic data into PostgreSQL/MinIO, then runs a pipeline whose inputs come only from those services. It performs real OCR and Qwen inference; there is no AI mock fallback. It produces:
 
@@ -58,7 +62,7 @@ output/audit_summary.jsonl   # 1 row
 ```text
 <project-root>/
 ├── runtime.yml
-│   # Configures the Vane Runner (Ray by default), PostgreSQL, MinIO, OCR,
+│   # Configures the Vane Runner (Local by default), PostgreSQL, MinIO, OCR,
 │   # Qwen, and the JSONL output directory.
 │
 ├── scripts/
@@ -102,20 +106,20 @@ output/audit_summary.jsonl   # 1 row
 │   │   # Main eight-node DAG orchestrator: reads sources, runs OCR and AI,
 │   │   # executes score SQL, builds two marts, and publishes the final JSONL.
 │   │   └── [Vane] Uses vane.configure to select Local or Ray Runner;
-│   │       runs stateful OCR and AI-response validation directly from SQL;
-│   │       uses Relation.write_parquet for Runner-backed SQL and AI stages.
+│   │       exposes Local OCR results or a Ray OCR Actor to the same SQL call;
+│   │       uses Relation.write_parquet for Runner-backed SQL stages.
 │   │
 │   ├── vane_functions.py
 │   │   # Normalizes OCR output and enforces the strict AI JSON contract.
 │   │   └── [Vane] validate_audit_fact_json is a stateless Function;
-│   │       EvidenceOcrActor is attached as the stateful evidence_ocr_json
-│   │       SQL expression and reuses one RapidOCR engine.
+│   │       EvidenceOcrActor runs directly on Local or is attached as the
+│   │       stateful evidence_ocr_json SQL expression on Ray.
 │   │
 │   ├── ai.py
 │   │   # Combines OCR text, supplier aliases, and images into multimodal requests,
 │   │   # binds facts to trusted evidence roles, and retries one contract failure.
-│   │   └── [Vane] Calls Qwen through vane.ai.prompt and materializes each
-│   │       evidence response through the active Runner.
+│   │   └── [Vane] Uses the public provider API on Local and vane.ai.prompt on Ray,
+│   │       while preserving the same request, retry, and response table contract.
 │   │
 │   ├── sql/
 │   │   ├── staging/
@@ -157,7 +161,7 @@ output/audit_summary.jsonl   # 1 row
     # Covers source contracts, OCR Actor, AI contract, SQL DAG, Runner, and publication.
 ```
 
-The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → output_writer.py`. Vane attaches the reusable OCR actor and response validator as SQL expressions; the checked-in configuration executes those direct-UDF and AI Relation boundaries on Ray. Each UDF call is isolated in a visible `*_udf.sql` node; downstream SQL owns parsing, trusted-role filtering, score deviation, reranking, and audit rules. Python remains only for source/service I/O, AI request binding and retry, Runner materialization, and atomic output publication.
+The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → output_writer.py`. Local keeps native OCR and the async provider client on the driver; Ray attaches the reusable OCR Actor and executes AI through `vane.ai.prompt`. The SQL UDF boundaries and typed outputs remain the same. Each UDF call is isolated in a visible `*_udf.sql` node; downstream SQL owns parsing, trusted-role filtering, score deviation, reranking, and audit rules.
 
 ## Audit logic and boundaries
 

@@ -211,11 +211,46 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
             parameters=list(spec.parameters),
             replace=True,
         )
+    if config.runner == "ray":
+        vane.attach_function(
+            DocumentOcrActor(config.minio),
+            connection=connection,
+            alias="document_ocr_json",
+            parameters=["VARCHAR", "VARCHAR"],
+            replace=True,
+        )
+
+
+def attach_local_document_ocr_lookup(
+    runner_connection: Any,
+    driver_connection: Any,
+    config: RuntimeConfig,
+) -> None:
+    """Run native OCR on the driver and expose its immutable results as a task UDF."""
+
+    locators = driver_connection.sql(
+        "select distinct cast(bucket as varchar), cast(object_key as varchar) "
+        "from int_claim_object_facts "
+        "where object_exists "
+        "and role = 'supporting_document' "
+        "and media_type = 'image/png' "
+        "order by 1, 2"
+    ).fetchall()
+    ocr = DocumentOcrActor(config.minio)
+    results = {
+        (bucket, object_key): ocr(bucket, object_key)
+        for bucket, object_key in locators
+    }
+
+    def document_ocr_json(bucket: str, object_key: str) -> str:
+        return results[(bucket, object_key)]
+
     vane.attach_function(
-        DocumentOcrActor(config.minio),
-        connection=connection,
+        document_ocr_json,
+        connection=runner_connection,
         alias="document_ocr_json",
         parameters=["VARCHAR", "VARCHAR"],
+        return_dtype="VARCHAR",
         replace=True,
     )
 
@@ -351,6 +386,12 @@ def run_pipeline(
             )
             _execute_sql_file(connection, OBJECT_FACT_STAGE)
             for sql_path in OBJECT_FACT_UDF_STAGES:
+                if config.runner == "local" and sql_path == DOCUMENT_OCR_UDF_STAGE:
+                    attach_local_document_ocr_lookup(
+                        runner_connection,
+                        connection,
+                        config,
+                    )
                 _execute_runner_sql_file(
                     connection,
                     runner_connection,

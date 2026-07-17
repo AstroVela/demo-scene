@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -147,7 +148,10 @@ def test_relation_requires_ai_request_coverage_for_every_fixture_image(
 
 def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypatch):
     source = _source()
-    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="ray",
+    )
     session = FakeSession()
     prompt_calls = []
     recommendation_response = (
@@ -199,9 +203,87 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypa
     ]
 
 
-def test_invalid_model_contract_is_retried_once_with_same_image(monkeypatch):
+def test_local_runner_uses_vane_provider_without_relation_actor(monkeypatch):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    session = FakeSession()
+    recommendation_response = (
+        '{"confidence":0.96,"document_type":"recommendation_record",'
+        '"evidence_quote":"推荐供应商：景维自动化有限公司","expert_id":"EXP-001",'
+        '"participated":null,"recommended":true,"recused":null,'
+        '"supplier_name":"景维自动化有限公司"}'
+    )
+    minutes_response = (
+        '{"confidence":0.95,"document_type":"committee_minutes",'
+        '"evidence_quote":"参加评审：是；是否回避：否","expert_id":"EXP-001",'
+        '"participated":true,"recommended":null,"recused":false,'
+        '"supplier_name":null}'
+    )
+    responses = iter([recommendation_response, minutes_response])
+    provider_calls = []
+    prompter_calls = []
+
+    class Prompter:
+        async def prompt(self, messages):
+            prompter_calls.append(messages)
+            return next(responses)
+
+    class Descriptor:
+        def instantiate(self):
+            return Prompter()
+
+    class Provider:
+        def get_prompter(self, **options):
+            provider_calls.append(options)
+            return Descriptor()
+
+    monkeypatch.setattr(
+        vane.ai,
+        "load_provider",
+        lambda provider, **options: provider_calls.append((provider, options))
+        or Provider(),
+    )
+    monkeypatch.setattr(
+        vane.ai,
+        "prompt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "LocalRunner must not use the relation actor boundary"
+        ),
+    )
+
+    result = build_evidence_ai_relation(
+        OCR_ROWS,
+        session,
+        source,
+        config,
+        health_probe=lambda _config: None,
+        object_store=FakeStore(),
+    )
+
+    assert provider_calls[0][0] == "openai"
+    assert provider_calls[1]["system_message"] == AUDIT_FACT_SYSTEM_MESSAGE
+    assert len(prompter_calls) == 2
+    assert all(isinstance(messages[1], bytes) for messages in prompter_calls)
+    assert result.table.to_pylist() == [
+        {
+            "project_id": "PRJ-2026-001",
+            "file_id": "EVD-REC-001",
+            "raw_response": recommendation_response,
+        },
+        {
+            "project_id": "PRJ-2026-001",
+            "file_id": "EVD-MIN-001",
+            "raw_response": minutes_response,
+        },
+    ]
+
+
+def test_invalid_model_contract_is_retried_once_with_same_image(monkeypatch):
+    source = _source()
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="ray",
+    )
     session = FakeSession()
     invalid = (
         '```json\n{"document_type":"committee_minutes","expert_id":"EXP-001",'
@@ -245,7 +327,10 @@ def test_invalid_model_contract_is_retried_once_with_same_image(monkeypatch):
 
 def test_response_document_type_must_match_trusted_evidence_role(monkeypatch):
     source = _source()
-    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="ray",
+    )
     session = FakeSession()
     wrong_role = (
         '{"confidence":0.95,"document_type":"committee_minutes",'
@@ -290,7 +375,10 @@ def test_response_document_type_must_match_trusted_evidence_role(monkeypatch):
 
 def test_two_invalid_model_contracts_fail_with_file_context(monkeypatch):
     source = _source()
-    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="ray",
+    )
     session = FakeSession()
 
     recommendation = (

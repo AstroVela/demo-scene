@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from procurement_audit_sql_demo import cli
 from procurement_audit_sql_demo.pipeline import PipelineResult
@@ -37,7 +38,11 @@ def _result(tmp_path):
 
 
 def test_cli_prints_business_result_and_vane_capabilities(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "load_runtime_config", lambda _path: object())
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_config",
+        lambda _path: SimpleNamespace(runner="local"),
+    )
     monkeypatch.setattr(cli, "run_pipeline", lambda _config: _result(tmp_path))
 
     assert cli.main(["--config", str(tmp_path / "runtime.yml")]) == 0
@@ -48,14 +53,19 @@ def test_cli_prints_business_result_and_vane_capabilities(monkeypatch, capsys, t
     assert "SUP-JW-001 -> SUP-ZJ-002" in output
     assert "3 findings" in output
     assert "PostgreSQL business rows + MinIO evidence objects" in output
-    assert "[stateful UDF]" in output
-    assert "[AI Function]" in output
+    assert "Runner: local" in output
+    assert "[driver OCR]" in output
+    assert "[Vane provider]" in output
     assert "[stateless UDF]" in output
     assert "[SQL]" in output
 
 
 def test_cli_returns_nonzero_without_hiding_failure(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "load_runtime_config", lambda _path: object())
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_config",
+        lambda _path: SimpleNamespace(runner="local"),
+    )
     monkeypatch.setattr(
         cli,
         "run_pipeline",
