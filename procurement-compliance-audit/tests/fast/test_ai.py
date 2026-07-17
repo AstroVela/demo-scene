@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import vane
 
 from procurement_audit_sql_demo.ai import (
     AUDIT_FACT_SYSTEM_MESSAGE,
@@ -117,11 +118,19 @@ def test_low_quality_ocr_never_becomes_an_ai_request():
 def test_relation_requires_ai_request_coverage_for_every_fixture_image(
     ocr_rows,
     missing_file_id,
+    monkeypatch,
 ):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
     health_calls = []
+    monkeypatch.setattr(
+        vane.ai,
+        "prompt",
+        lambda *_args, **_kwargs: pytest.fail(
+            "model must not run with incomplete request coverage"
+        ),
+    )
 
     with pytest.raises(EvidenceAiInputError, match=missing_file_id):
         build_evidence_ai_relation(
@@ -129,9 +138,6 @@ def test_relation_requires_ai_request_coverage_for_every_fixture_image(
             session,
             source,
             config,
-            prompt_function=lambda *_args, **_kwargs: pytest.fail(
-                "model must not run with incomplete request coverage"
-            ),
             health_probe=lambda _config: health_calls.append(True),
             object_store=FakeStore(),
         )
@@ -139,7 +145,7 @@ def test_relation_requires_ai_request_coverage_for_every_fixture_image(
     assert health_calls == []
 
 
-def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
+def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypatch):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
@@ -162,12 +168,12 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
         prompt_calls.append((relation.table.to_pylist(), prompt_column, kwargs))
         return FakeRelation(None, [(next(responses),)])
 
+    monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
         source,
         config,
-        prompt_function=fake_prompt,
         health_probe=lambda _config: None,
         object_store=FakeStore(),
     )
@@ -193,7 +199,7 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound():
     ]
 
 
-def test_invalid_model_contract_is_retried_once_with_same_image():
+def test_invalid_model_contract_is_retried_once_with_same_image(monkeypatch):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
@@ -221,12 +227,12 @@ def test_invalid_model_contract_is_retried_once_with_same_image():
         calls.append(relation.table.to_pylist()[0])
         return FakeRelation(None, [(next(responses),)])
 
+    monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
         source,
         config,
-        prompt_function=fake_prompt,
         health_probe=lambda _config: None,
         object_store=FakeStore(),
     )
@@ -237,7 +243,7 @@ def test_invalid_model_contract_is_retried_once_with_same_image():
     assert result.table.to_pylist()[1]["raw_response"] == valid
 
 
-def test_response_document_type_must_match_trusted_evidence_role():
+def test_response_document_type_must_match_trusted_evidence_role(monkeypatch):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
@@ -266,12 +272,12 @@ def test_response_document_type_must_match_trusted_evidence_role():
         calls.append(relation.table.to_pylist()[0])
         return FakeRelation(None, [(next(responses),)])
 
+    monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
         OCR_ROWS,
         session,
         source,
         config,
-        prompt_function=fake_prompt,
         health_probe=lambda _config: None,
         object_store=FakeStore(),
     )
@@ -282,7 +288,7 @@ def test_response_document_type_must_match_trusted_evidence_role():
     assert result.table.to_pylist()[0]["raw_response"] == correct_role
 
 
-def test_two_invalid_model_contracts_fail_with_file_context():
+def test_two_invalid_model_contracts_fail_with_file_context(monkeypatch):
     source = _source()
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     session = FakeSession()
@@ -298,13 +304,13 @@ def test_two_invalid_model_contracts_fail_with_file_context():
     def fake_prompt(_relation, _prompt_column, **_kwargs):
         return FakeRelation(None, [(next(responses),)])
 
+    monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     with pytest.raises(EvidenceAiInputError, match="EVD-MIN-001"):
         build_evidence_ai_relation(
             OCR_ROWS,
             session,
             source,
             config,
-            prompt_function=fake_prompt,
             health_probe=lambda _config: None,
             object_store=FakeStore(),
         )
