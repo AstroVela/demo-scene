@@ -46,9 +46,9 @@ stg_claims / stg_claim_materials / stg_run_config
 
 1. 从 PostgreSQL 读取 4 条合成理赔记录及其材料元数据，并根据材料中的 MinIO locator 读取车辆受损照片和理赔证明文档；运行时不直接读取本地 fixture 文件。
 2. 校验每份材料的文件身份、顺序、角色、媒体类型、bucket 和规范化对象路径，并检查 MinIO 对象是否存在、计算 SHA-256，避免错误或被替换的文件进入自动处理。
-3. 通过 Vane Runner 对车辆照片执行质量分析，对证明文档复用 RapidOCR 引擎，并提取理赔编号、申请人姓名和出险日期等字段，判断材料是否完整、清晰且与当前理赔一致。
+3. 在 `int_claim_document_ocr_udf.sql` 中直接调用挂载的有状态 `document_ocr_json` 表达式，再由下游 SQL 提取理赔编号、申请人姓名和出险日期等字段，判断材料是否完整、清晰且与当前理赔一致；Actor 会为分配到的文档复用同一个 RapidOCR 引擎。
 4. 仅将通过完整性、质量和 Hash 校验的照片发送给 Qwen，提取目标车辆是否清晰、是否存在损伤、损伤部位、损伤类型、严重程度、置信度和不确定性原因等结构化事实。
-5. 对模型响应执行严格合同校验，再汇总同一理赔的多张照片结果，识别模型失败、证据冲突、目标车辆不清晰、置信度不足和高严重程度风险等不能自动处理的情况。
+5. 在直接交给 Runner 的 `int_claim_damage_validation_udf.sql` 中执行模型响应合同校验，再由纯 SQL 汇总同一理赔的多张照片结果，识别模型失败、证据冲突、目标车辆不清晰、置信度不足和高严重程度风险。
 6. 最后由确定性 SQL 按“补充材料、人工复核、拒赔候选、支付候选”的优先级生成工作流建议，校验九列输出合同，并在一个事务中写回 PostgreSQL；内置 fixture 用于验证四种分流结果都能稳定复现。
 
 ## 运行 Demo
@@ -101,13 +101,13 @@ claims-disposition/
 │   │   # 整条 DAG 的主编排器：读取 PostgreSQL、注册 SQL 输入、
 │   │   # 调度材料处理、AI、决策 SQL，并把最终结果交给发布模块。
 │   │   └── 【Vane】通过 vane.configure 选择 Local 或 Ray Runner；
-│   │       使用 map_batches 执行材料处理和模型响应校验；
-│   │       使用 Relation.write_parquet 统一两种 Runner 的物化路径。
+│   │       在 SQL 中直接执行有状态 OCR 和模型响应校验；
+│   │       使用 Relation.write_parquet 统一 SQL 与 AI 阶段的 Runner 物化路径。
 │   │
 │   ├── vane_udfs.py
 │   │   # 图片质量分析、文档字段提取、材料质量判断和 AI JSON 校验。
-│   │   └── 【Vane】定义无状态 Function、可复用 RapidOCR 的
-│   │       DocumentOcrActor，以及由 Runner 执行的 batch actor。
+│   │   └── 【Vane】定义无状态 Function，以及挂载为 document_ocr_json
+│   │       SQL 表达式、可复用 RapidOCR 的 DocumentOcrActor。
 │   │
 │   ├── photo_ai.py
 │   │   # 重新读取并校验照片 Hash，构造损伤分析 Prompt，
@@ -126,9 +126,15 @@ claims-disposition/
 │   │   │       # 将不含凭据的 OCR、模型和运行参数暴露给 SQL。
 │   │   │
 │   │   ├── intermediate/
+│   │   │   ├── int_claim_material_inputs.sql / int_claim_object_facts.sql
+│   │   │   │   # 用 SQL 表达可信 locator 门控与对象可用性事实。
+│   │   │   ├── int_claim_*_udf.sql
+│   │   │   │   # 直接交给 Runner 的 SQL 投影：MinIO 探测、Hash、图片质量、
+│   │   │   │   # 有状态 OCR、文档合同和模型响应校验。
 │   │   │   ├── int_claim_material_facts.sql
-│   │   │   │   # 定义材料处理的逻辑合同，并把 Vane Runner 产生的
-│   │   │   │   # 逐文件对象、Hash、质量和 OCR 事实聚合为一条 Claim 记录。
+│   │   │   │   # 关联各 UDF 输出，把逐文件事实聚合为一条 Claim 记录。
+│   │   │   ├── int_claim_damage_validation_inputs.sql
+│   │   │   │   # 把模型响应绑定到可信 claim、file 和 SHA-256 身份。
 │   │   │   ├── int_claim_damage_facts.sql
 │   │   │   │   # 将 Runner 校验后的逐照片损伤事实聚合到 Claim 级别，
 │   │   │   │   # 识别结果冲突、不确定性和高严重程度风险。
@@ -154,7 +160,7 @@ claims-disposition/
     # 覆盖配置、Runner 编排、SQL 路径、发布合同和发行包结构。
 ```
 
-执行主线是 `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`。Vane 负责可切换的执行后端、批处理 Actor、多模态模型调用和 Relation 物化；SQL 文件保留材料聚合与最终决策逻辑，使模型只提取事实，不直接决定支付或拒赔。
+执行主线是 `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`。每个 `*_udf.sql` 节点都是直接交给 Runner 的 SQL 投影，后续 SQL 节点负责解析、关联、分类和聚合。Python 只保留服务 I/O、AI 请求绑定、Runner 物化和原子发布等必要边界，不再用 batch wrapper 重复实现 SQL 规则。
 
 ## 决策边界
 

@@ -27,10 +27,18 @@ CORE_RELATIONS = {
     "audit_findings",
     "audit_summary",
 }
+INTERNAL_RELATIONS = {
+    "int_evidence_ocr_udf",
+    "int_conflict_validation_inputs",
+    "int_conflict_validation_udf",
+}
 SQL_ORDER = (
     "staging/stg_scores.sql",
     "staging/stg_evidence_images.sql",
+    "intermediate/int_evidence_ocr_udf.sql",
     "intermediate/int_evidence_ocr.sql",
+    "intermediate/int_conflict_validation_inputs.sql",
+    "intermediate/int_conflict_validation_udf.sql",
     "intermediate/int_conflict_facts.sql",
     "intermediate/int_score_metrics.sql",
     "marts/audit_findings.sql",
@@ -129,14 +137,14 @@ def _run_dag(
         ["VARCHAR"],
         "VARCHAR",
     )
-    for relative_path in SQL_ORDER[:3]:
+    for relative_path in SQL_ORDER[:4]:
         connection.execute((SQL_ROOT / relative_path).read_text(encoding="utf-8"))
     _register_table(
         connection,
         "int_evidence_ai",
         _raw_ai_rows(confidence, swap_document_roles=swap_document_roles),
     )
-    for relative_path in SQL_ORDER[3:]:
+    for relative_path in SQL_ORDER[4:]:
         connection.execute((SQL_ROOT / relative_path).read_text(encoding="utf-8"))
     return connection
 
@@ -153,8 +161,41 @@ def test_sql_dag_has_exactly_eight_core_relations():
         for match in relation_pattern.finditer(path.read_text(encoding="utf-8"))
     }
 
-    assert len(sql_files) == 7
-    assert discovered | {"int_evidence_ai"} == CORE_RELATIONS
+    assert len(sql_files) == 10
+    assert discovered == (CORE_RELATIONS - {"int_evidence_ai"}) | INTERNAL_RELATIONS
+
+
+def test_evidence_ocr_udf_stage_is_a_direct_runner_projection():
+    udf_statement = (SQL_ROOT / "intermediate/int_evidence_ocr_udf.sql").read_text(
+        encoding="utf-8"
+    )
+    normalized_statement = (SQL_ROOT / "intermediate/int_evidence_ocr.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert udf_statement.count("evidence_ocr_json(") == 1
+    assert "json_extract" not in udf_statement
+    assert "from int_evidence_ocr_udf" in normalized_statement
+    assert "evidence_ocr_json(" not in normalized_statement
+
+
+def test_conflict_fact_stage_owns_validation_and_role_filtering():
+    input_statement = (
+        SQL_ROOT / "intermediate/int_conflict_validation_inputs.sql"
+    ).read_text(encoding="utf-8")
+    udf_statement = (
+        SQL_ROOT / "intermediate/int_conflict_validation_udf.sql"
+    ).read_text(encoding="utf-8")
+    fact_statement = (SQL_ROOT / "intermediate/int_conflict_facts.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "inner join stg_evidence_images" in input_statement
+    assert udf_statement.count("validate_audit_fact_json(raw_response)") == 1
+    assert "json_extract" not in udf_statement
+    assert "from int_conflict_validation_udf" in fact_statement
+    assert "role = 'expert_recommendation'" in fact_statement
+    assert "role = 'committee_minutes'" in fact_statement
 
 
 def test_fixed_ai_facts_produce_three_linked_findings():

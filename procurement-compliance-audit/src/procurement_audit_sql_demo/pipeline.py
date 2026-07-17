@@ -1,10 +1,9 @@
-"""Explicit single-connection orchestration for the eight-node SQL DAG."""
+"""Explicit orchestration for the eight-node SQL DAG."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import inspect
 from pathlib import Path
 import re
 from tempfile import TemporaryDirectory
@@ -22,9 +21,7 @@ from .output_writer import PublishedOutputs, write_outputs
 from .pg import connect_postgres, probe_postgres, read_source_rows
 from .source_data import SourceBundle, source_bundle_from_rows
 from .vane_functions import (
-    EVIDENCE_OCR_BATCH_SCHEMA,
     EvidenceOcrActor,
-    build_evidence_ocr_batch_actor,
     validate_audit_fact_json_udf,
 )
 from .verify_outputs import verify_fixture_outputs
@@ -34,10 +31,13 @@ SQL_ROOT = Path(__file__).resolve().parent / "sql"
 PRE_AI_STAGES = (
     ("stg_scores", SQL_ROOT / "staging/stg_scores.sql"),
     ("stg_evidence_images", SQL_ROOT / "staging/stg_evidence_images.sql"),
-    ("int_evidence_ocr", SQL_ROOT / "intermediate/int_evidence_ocr.sql"),
 )
+EVIDENCE_OCR_UDF_STAGE = SQL_ROOT / "intermediate/int_evidence_ocr_udf.sql"
+EVIDENCE_OCR_STAGE = SQL_ROOT / "intermediate/int_evidence_ocr.sql"
+CONFLICT_VALIDATION_INPUT_STAGE = SQL_ROOT / "intermediate/int_conflict_validation_inputs.sql"
+CONFLICT_VALIDATION_UDF_STAGE = SQL_ROOT / "intermediate/int_conflict_validation_udf.sql"
+CONFLICT_FACT_STAGE = SQL_ROOT / "intermediate/int_conflict_facts.sql"
 POST_AI_STAGES = (
-    ("int_conflict_facts", SQL_ROOT / "intermediate/int_conflict_facts.sql"),
     ("int_score_metrics", SQL_ROOT / "intermediate/int_score_metrics.sql"),
     ("audit_findings", SQL_ROOT / "marts/audit_findings.sql"),
     ("audit_summary", SQL_ROOT / "marts/audit_summary.sql"),
@@ -65,14 +65,14 @@ class RuntimeConnectionError(ConnectionError):
 
 
 class RunnerWorkspace:
-    """Stage driver-local Arrow data as scans visible to every Vane Runner."""
+    """Stage driver-local Arrow data as Parquet scans for the active Runner."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
         self.counter = 0
 
     def stage_table(self, name: str, table: pa.Table) -> Path:
-        """Persist Arrow input as a Parquet scan for either Runner backend."""
+        """Persist Arrow input as a Parquet scan for the configured Runner."""
 
         self.counter += 1
         path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
@@ -134,31 +134,9 @@ def register_or_replace_table(
         connection.unregister(temporary)
 
 
-def _ensure_runner_write_compatibility() -> None:
-    """Bridge the pinned wheel's LocalRunner/progress signature mismatch."""
-
-    from duckdb.runners.progress import ProgressRenderer
-
-    original_update = ProgressRenderer.update
-    if "allow_terminal" in inspect.signature(original_update).parameters:
-        return
-
-    def compatible_update(
-        self: Any,
-        *,
-        force: bool = False,
-        allow_terminal: bool = False,
-    ) -> None:
-        del allow_terminal
-        original_update(self, force=force)
-
-    ProgressRenderer.update = compatible_update
-
-
 def materialize_relation(relation: Any) -> pa.Table:
     """Materialize a Relation through the active Vane Runner write API."""
 
-    _ensure_runner_write_compatibility()
     with TemporaryDirectory(prefix="procurement-runner-result-") as root:
         path = Path(root) / "result.parquet"
         relation.write_parquet(str(path))
@@ -232,108 +210,40 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
     )
 
 
-def _create_evidence_ocr_table(
-    connection: Any,
-    config: RuntimeConfig,
-    *,
-    workspace: RunnerWorkspace,
-) -> None:
-    """Read MinIO evidence and run OCR through the active Vane Runner."""
-
-    source = workspace.relation_from_table(
-        connection,
-        "evidence_ocr_input",
-        connection.sql("select * from stg_evidence_images").to_arrow_table(),
-    )
-    relation = source.map_batches(
-        build_evidence_ocr_batch_actor(config.minio),
-        schema=EVIDENCE_OCR_BATCH_SCHEMA,
-        actor_number=1,
-        gpus=0,
-    )
-    register_or_replace_table(
-        connection,
-        "int_evidence_ocr",
-        materialize_relation(relation),
-    )
-
-
-def _rewrite_conflict_validation_cte(query: str) -> str:
-    result, count = re.subn(
-        r"with\s+validated\s+as\s+materialized\s*\(.*?\)\s*select",
-        "with validated as (select * from __runner_validated_audit_facts)\nselect",
-        query,
-        count=1,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if count != 1:
-        raise RuntimeError("cannot isolate int_conflict_facts validation CTE")
-    return result
-
-
-def _create_runner_conflict_facts(
-    connection: Any,
-    path: Path,
-    *,
-    workspace: RunnerWorkspace,
-) -> None:
-    """Validate each AI fact through Vane before trusted-role filtering."""
-
-    inputs = _relation_rows(connection, "int_evidence_ai", order_by="file_id")
-    roles = {
-        row["file_id"]: row
-        for row in _relation_rows(
-            connection,
-            "stg_evidence_images",
-            order_by="file_id",
-        )
-    }
-    validated_rows = []
-    for row in inputs:
-        source = workspace.relation_from_table(
-            connection,
-            "audit_fact_validation_input",
-            pa.table({"raw_response": [row["raw_response"]]}),
-        )
-        relation = source.project(
-            "validate_audit_fact_json(raw_response) as fact_json"
-        )
-        result = materialize_relation(relation)
-        if result.num_rows != 1:
-            raise RuntimeError("audit fact validation must return exactly one row")
-        evidence = roles[row["file_id"]]
-        validated_rows.append(
-            {
-                "project_id": evidence["project_id"],
-                "file_id": row["file_id"],
-                "role": evidence["role"],
-                "fact_json": result.column("fact_json")[0].as_py(),
-            }
-        )
-    register_or_replace_table(
-        connection,
-        "__runner_validated_audit_facts",
-        pa.Table.from_pylist(
-            validated_rows,
-            schema=pa.schema(
-                [
-                    ("project_id", pa.string()),
-                    ("file_id", pa.string()),
-                    ("role", pa.string()),
-                    ("fact_json", pa.string()),
-                ]
-            ),
-        ),
-    )
+def _sql_stage_parts(path: Path) -> tuple[str, str]:
     statement = path.read_text(encoding="utf-8")
     match = _CREATE_RELATION_AS.fullmatch(
         statement.strip().removesuffix(";").strip()
     )
     if match is None:
-        raise RuntimeError(f"invalid int_conflict_facts SQL stage: {path}")
-    connection.execute(
-        "create or replace view int_conflict_facts as "
-        + _rewrite_conflict_validation_cte(match.group("query"))
+        raise RuntimeError(f"invalid SQL stage: {path}")
+    return match.group("target"), match.group("query")
+
+
+def _execute_runner_sql_file(
+    connection: Any,
+    runner_connection: Any,
+    path: Path,
+    *,
+    workspace: RunnerWorkspace,
+    source_relations: tuple[str, ...],
+    materializer: Callable[[Any], pa.Table],
+) -> None:
+    """Run one SQL model through the active Vane Runner and register its result."""
+
+    for source_name in source_relations:
+        name = _safe_identifier(source_name)
+        table = connection.sql(f"select * from {name}").to_arrow_table()
+        workspace.relation_from_table(
+            runner_connection,
+            name,
+            table,
+        ).create_view(name, replace=True)
+    target, query = _sql_stage_parts(path)
+    register_or_replace_table(
+        connection,
+        target,
+        materializer(runner_connection.sql(query)),
     )
 
 
@@ -356,6 +266,7 @@ def run_pipeline(
     connection_factory: Callable[[], Any] = duckdb.connect,
     source_loader: Callable[[RuntimeConfig], SourceBundle] = read_source_bundle,
     output_publisher: Callable[..., PublishedOutputs] = write_outputs,
+    relation_materializer: Callable[[Any], pa.Table] = materialize_relation,
 ) -> PipelineResult:
     """Execute all eight core relations, verify the fixture, and publish JSONL."""
 
@@ -370,21 +281,27 @@ def run_pipeline(
     ) as workspace_root:
         workspace = RunnerWorkspace(Path(workspace_root))
         connection = connection_factory()
+        runner_connection = connection_factory()
         try:
-            # Register the validated PostgreSQL snapshot and Vane functions.
+            # Register the validated PostgreSQL snapshot on the driver.
             _register_inputs(connection, source)
-            runtime_function_attacher(connection, config)
-            # Normalize scores and OCR MinIO evidence through the active Runner.
+            runtime_function_attacher(runner_connection, config)
+            # Normalize the PostgreSQL inputs on the driver.
             for relation_name, sql_path in PRE_AI_STAGES:
-                if relation_name == "int_evidence_ocr":
-                    _create_evidence_ocr_table(
-                        connection,
-                        config,
-                        workspace=workspace,
-                    )
-                else:
-                    _execute_sql_file(connection, sql_path)
+                _execute_sql_file(connection, sql_path)
                 executed.append(relation_name)
+            # Keep the stateful Actor call as a direct Runner SQL projection;
+            # parse its JSON contract in the following pure SQL relation.
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                EVIDENCE_OCR_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("stg_evidence_images",),
+                materializer=relation_materializer,
+            )
+            _execute_sql_file(connection, EVIDENCE_OCR_STAGE)
+            executed.append("int_evidence_ocr")
 
             # Bind each qualified OCR record to one multimodal evidence request.
             ocr_rows = _relation_rows(
@@ -402,7 +319,7 @@ def run_pipeline(
                     "evidence_ai_request",
                     table,
                 ),
-                response_materializer=materialize_relation,
+                response_materializer=relation_materializer,
                 result_factory=lambda table: table,
             )
             register_or_replace_table(
@@ -412,16 +329,23 @@ def run_pipeline(
             )
             executed.append("int_evidence_ai")
 
-            # Validate AI facts, compute score impact, and build both marts.
+            # Bind model output to trusted metadata before remote validation.
+            _execute_sql_file(connection, CONFLICT_VALIDATION_INPUT_STAGE)
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                CONFLICT_VALIDATION_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_conflict_validation_inputs",),
+                materializer=relation_materializer,
+            )
+            # Parse validated facts and apply the role contract in pure SQL.
+            _execute_sql_file(connection, CONFLICT_FACT_STAGE)
+            executed.append("int_conflict_facts")
+
+            # Compute score impact and build both marts.
             for relation_name, sql_path in POST_AI_STAGES:
-                if relation_name == "int_conflict_facts":
-                    _create_runner_conflict_facts(
-                        connection,
-                        sql_path,
-                        workspace=workspace,
-                    )
-                else:
-                    _execute_sql_file(connection, sql_path)
+                _execute_sql_file(connection, sql_path)
                 executed.append(relation_name)
             findings = _relation_rows(
                 connection,
@@ -434,6 +358,7 @@ def run_pipeline(
                 order_by="project_id",
             )
         finally:
+            runner_connection.close()
             connection.close()
 
     # Assert the fixture story before atomically replacing the JSONL outputs.

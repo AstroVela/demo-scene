@@ -46,9 +46,9 @@ stg_claims / stg_claim_materials / stg_run_config
 
 1. Reads four synthetic claims and their material metadata from PostgreSQL, then follows the stored MinIO locators to read vehicle-damage photos and supporting claim documents; the runtime never reads local fixture files directly.
 2. Validates each material's file identity, order, role, media type, bucket, and canonical object path, then checks MinIO object existence and computes SHA-256 so that incorrect or replaced files cannot enter automated processing.
-3. Runs photo-quality analysis through the Vane Runner, reuses one RapidOCR engine for supporting documents, and extracts fields such as claim number, claimant name, and loss date to determine whether the materials are complete, legible, and consistent with the current claim.
+3. Calls the attached stateful `document_ocr_json` expression directly in `int_claim_document_ocr_udf.sql`, then lets downstream SQL extract claim number, claimant name, and loss date and determine whether the materials are complete, legible, and consistent with the current claim. The Actor reuses one RapidOCR engine for all assigned documents.
 4. Sends only photos that pass completeness, quality, and hash validation to Qwen, which extracts structured facts including target-vehicle clarity, visible damage, damaged parts, damage types, severity, confidence, and uncertainty reasons.
-5. Enforces a strict contract on model responses and aggregates all photo results for each claim, identifying model failures, conflicting evidence, unclear target vehicles, insufficient confidence, and high-severity risks that prevent automated handling.
+5. Enforces the model-response contract in the direct Runner projection `int_claim_damage_validation_udf.sql`, then uses pure SQL to aggregate every photo result for each claim and identify failures, conflicting evidence, unclear target vehicles, insufficient confidence, and high-severity risks.
 6. Applies deterministic SQL precedence for requesting more materials, manual review, denial candidates, and payment candidates; validates the nine-column output contract; and writes the result to PostgreSQL in one transaction. The built-in fixture verifies that all four workflow outcomes remain reproducible.
 
 ## Run the demo
@@ -101,13 +101,13 @@ claims-disposition/
 │   │   # Main DAG orchestrator: reads PostgreSQL, registers SQL inputs, schedules
 │   │   # material processing, AI, and decision SQL, then hands results to publication.
 │   │   └── [Vane] Uses vane.configure to select Local or Ray Runner;
-│   │       uses map_batches for material processing and model-response validation;
-│   │       uses Relation.write_parquet as the shared materialization path.
+│   │       runs stateful OCR and model-response validation directly from SQL;
+│   │       uses Relation.write_parquet for Runner-backed SQL and AI stages.
 │   │
 │   ├── vane_udfs.py
 │   │   # Implements photo quality, document fields, material quality, and AI JSON checks.
-│   │   └── [Vane] Defines stateless Functions, the reusable RapidOCR
-│   │       DocumentOcrActor, and batch actors executed by the Runner.
+│   │   └── [Vane] Defines stateless Functions and the reusable RapidOCR
+│   │       DocumentOcrActor attached as the document_ocr_json SQL expression.
 │   │
 │   ├── photo_ai.py
 │   │   # Re-reads and hashes photos, builds damage prompts, and binds every request
@@ -126,9 +126,15 @@ claims-disposition/
 │   │   │       # Exposes credential-free OCR, model, and run settings to SQL.
 │   │   │
 │   │   ├── intermediate/
+│   │   │   ├── int_claim_material_inputs.sql / int_claim_object_facts.sql
+│   │   │   │   # Express trusted locator gating and object availability as SQL facts.
+│   │   │   ├── int_claim_*_udf.sql
+│   │   │   │   # Direct Runner SQL projections for MinIO probes, hashes, photo quality,
+│   │   │   │   # stateful OCR, document contracts, and model-response validation.
 │   │   │   ├── int_claim_material_facts.sql
-│   │   │   │   # Defines the material-processing contract and aggregates per-file
-│   │   │   │   # object, hash, quality, and OCR facts produced by the Vane Runner.
+│   │   │   │   # Joins UDF outputs and aggregates per-file facts into one claim row.
+│   │   │   ├── int_claim_damage_validation_inputs.sql
+│   │   │   │   # Binds model responses to trusted claim, file, and SHA-256 identities.
 │   │   │   ├── int_claim_damage_facts.sql
 │   │   │   │   # Aggregates Runner-validated photo damage facts per claim and
 │   │   │   │   # detects conflicts, uncertainty, and high-severity risk.
@@ -154,7 +160,7 @@ claims-disposition/
     # Covers configuration, Runner orchestration, SQL paths, publication, and packaging.
 ```
 
-The execution path is `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`. Vane supplies the switchable execution backend, batch actors, multimodal model calls, and Relation materialization. The SQL files retain material aggregation and final decision logic, so the model extracts facts without deciding whether to pay or deny a claim.
+The execution path is `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`. Vane supplies SQL-callable functions and stateful actors, the switchable execution backend, multimodal model calls, and Relation materialization. Each `*_udf.sql` node is a direct Runner projection; the following SQL nodes parse, join, classify, and aggregate its output. Python remains responsible for service I/O, AI request binding, Runner materialization, and atomic publication rather than duplicating those rules in batch wrappers.
 
 ## Decision boundary
 

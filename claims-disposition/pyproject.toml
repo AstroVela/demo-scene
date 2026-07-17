@@ -19,7 +19,7 @@ dependencies = [
   "pyyaml>=6,<7",
   "pytz>=2026.2,<2027",
   "rapidocr>=3,<4",
-  "vane-ai==0.1.0.dev20260714234347",
+  "vane-ai==0.1.0a1",
 ]
 
 [project.optional-dependencies]

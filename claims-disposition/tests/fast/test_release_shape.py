@@ -6,7 +6,7 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = PROJECT_ROOT.parent
-PINNED_VANE = "vane-ai==0.1.0.dev20260714234347"
+PINNED_VANE = "vane-ai==0.1.0a1"
 PINNED_OPENAI = "openai==2.45.0"
 QWEN_REVISION = "66285546d2b821cf421d4f5eb2576359d3770cd3"
 
@@ -59,8 +59,8 @@ def test_runbooks_document_a_fresh_environment_and_all_services():
         "127.0.0.1:5432",
         "127.0.0.1:9000",
         "127.0.0.1:8001",
-        "v1.6.0-dev121",
-        "ca6948529b",
+        "v1.6.0-dev1",
+        "398033a962",
     )
     for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")

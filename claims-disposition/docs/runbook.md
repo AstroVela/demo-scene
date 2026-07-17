@@ -10,7 +10,7 @@ This runbook contains the exact environment, installation, service, configuratio
 | --- | --- |
 | Operating system | Ubuntu 24.04 x86_64, glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0.dev20260714234347` |
+| Vane | `vane-ai==0.1.0a1` |
 | PostgreSQL | `127.0.0.1:5432` |
 | MinIO | `127.0.0.1:9000` |
 | Model service | Qwen2.5-VL-3B on an NVIDIA CUDA GPU at `127.0.0.1:8001` |
@@ -46,7 +46,7 @@ The environment directory may have another name. The launcher validates the acti
 ```bash
 python -m pip install -i https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0.dev20260714234347
+  vane-ai==0.1.0a1
 ```
 
 Keep both indexes: Vane comes from TestPyPI while ordinary dependencies resolve from PyPI. Keep the exact version because the launcher rejects unvalidated Vane and custom DuckDB builds.
@@ -62,7 +62,7 @@ python -m pip check
 
 | Dependency | Purpose |
 | --- | --- |
-| `vane-ai==0.1.0.dev20260714234347` | Vane APIs, custom DuckDB, and workers |
+| `vane-ai==0.1.0a1` | Vane APIs, custom DuckDB, and workers |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `minio` | Object reads/writes and SHA-256 UDFs |
 | `psycopg[binary]` | PostgreSQL input, fixtures, and atomic publication |
@@ -167,9 +167,9 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 | OCR | RapidOCR on CPU; required fields `claim_number`, `claimant_name`, `loss_date`; minimum mean confidence `0.70` |
 | AI | OpenAI provider; `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-Set `runner: local` or `runner: ray` in `runtime.yml`. Both modes are end-to-end verified on the single-host fixture and use the same Runner-backed Relation path. Driver-local Arrow inputs are staged as temporary Parquet files, and `Relation.write_parquet()` dispatches OCR, AI, and validation plans through the active Vane Runner (`LocalRunner.run_write` or `RayRunner.run_write`). Vane selects the matching subprocess or Ray execution backend for batch functions. The materialized Arrow results are then registered in the driver's DuckDB catalog for deterministic joins and aggregates, and temporary staging files are deleted when the run finishes.
+Set `runner: local` or `runner: ray` in `runtime.yml`; both modes use the same SQL and Relation pipeline. The pipeline attaches `DocumentOcrActor` as the stateful `document_ocr_json(bucket, object_key)` expression, and `int_claim_document_ocr_udf.sql` calls it once per eligible supporting document. Every `*_udf.sql` file is a direct UDF projection executed through `Relation.write_parquet()` by the active Vane Runner (`LocalRunner.run_write` or `RayRunner.run_write`); the following pure SQL file parses, joins, classifies, or aggregates the materialized output. Driver-local inputs are staged as temporary Parquet files, results are registered back in the driver's DuckDB catalog, and the staging directory is deleted when the run finishes. `vane-ai==0.1.0a1` is required because it preserves row-UDF passthrough columns on the Ray path. The staged stateful-Actor, stateless-validator, and downstream-SQL shape has been smoke-tested on both runners.
 
-The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the shared materializer deliberately uses the Runner-backed write API instead of a direct DuckDB export. A narrow compatibility adapter only normalizes the Local Runner progress-callback signature in this build; it does not bypass the Runner.
+The shared materializer uses the Runner-backed write API rather than a direct DuckDB export, so Local and Ray follow the same execution boundary.
 
 The loader validates YAML shape, SQL identifiers, loopback URLs, required values, and numeric ranges. Diagnostics avoid printing the complete PostgreSQL DSN, MinIO secret, or AI key. For a loopback AI URL, the launcher removes HTTP proxy variables and augments `NO_PROXY`/`no_proxy`.
 
@@ -230,11 +230,11 @@ The writer validates all nine columns, types, enums, confidence, and timestamps 
 
 | Component | Required identifier |
 | --- | --- |
-| Vane distribution metadata (`vane-ai`) | `0.1.0.dev20260714234347` |
-| `vane.__version__` | `0.1.0.dev20260714234347` |
-| DuckDB Python package | `0.1.0.dev20260714234347` |
-| DuckDB engine | `v1.6.0-dev121` |
-| DuckDB source revision | `ca6948529b` |
+| Vane distribution metadata (`vane-ai`) | `0.1.0a1` |
+| `vane.__version__` | `0.1.0a1` |
+| DuckDB Python package | `0.1.0a1` |
+| DuckDB engine | `v1.6.0-dev1` |
+| DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
 The launcher also requires `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any mismatch fails explicitly instead of silently falling back to ordinary DuckDB.

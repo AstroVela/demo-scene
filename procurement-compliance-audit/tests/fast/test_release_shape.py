@@ -26,7 +26,7 @@ def test_release_shape_is_deliberately_small():
         "project.json",
     ]
     assert len(CORE_RELATIONS) == 8
-    assert len(list((PROJECT_ROOT / "src/procurement_audit_sql_demo/sql").rglob("*.sql"))) == 7
+    assert len(list((PROJECT_ROOT / "src/procurement_audit_sql_demo/sql").rglob("*.sql"))) == 10
     assert EXPECTED_RULES == {
         "EXP-001-conflict-not-recused",
         "EXP-002-score-bias",
@@ -42,6 +42,8 @@ def test_runtime_source_contract_uses_postgres_and_minio_not_local_paths():
         PROJECT_ROOT / "src/procurement_audit_sql_demo/ai.py",
         PROJECT_ROOT / "src/procurement_audit_sql_demo/vane_functions.py",
         PROJECT_ROOT / "src/procurement_audit_sql_demo/sql/staging/stg_evidence_images.sql",
+        PROJECT_ROOT
+        / "src/procurement_audit_sql_demo/sql/intermediate/int_evidence_ocr_udf.sql",
         PROJECT_ROOT / "src/procurement_audit_sql_demo/sql/intermediate/int_evidence_ocr.sql",
     ]
 
@@ -81,7 +83,7 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
             "python3.12 -m venv .venv",
             "https://test.pypi.org/simple/",
             "--extra-index-url https://pypi.org/simple/",
-            "vane-ai==0.1.0.dev20260714234347",
+            "vane-ai==0.1.0a1",
             "python -m pip install -r requirements.txt",
             "Qwen2.5-VL-3B-Instruct",
             "runner: local",
@@ -100,7 +102,7 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
         assert "vllm==0.25.1" in qwen_guide
         assert "66285546d2b821cf421d4f5eb2576359d3770cd3" in qwen_guide
         assert "/v1/chat/completions" in qwen_guide
-    assert "vane-ai==0.1.0.dev20260714234347" in project["dependencies"]
+    assert "vane-ai==0.1.0a1" in project["dependencies"]
     assert "openai==2.45.0" in project["dependencies"]
     assert any(item.startswith("minio") for item in project["dependencies"])
     assert any(item.startswith("psycopg") for item in project["dependencies"])

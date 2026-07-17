@@ -10,9 +10,9 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_PATH = PROJECT_ROOT / "scripts/run_demo.py"
-VANE_VERSION = "0.1.0.dev20260714234347"
-DUCKDB_ENGINE_VERSION = "v1.6.0-dev121"
-DUCKDB_SOURCE_REVISION = "ca6948529b"
+VANE_VERSION = "0.1.0a1"
+DUCKDB_ENGINE_VERSION = "v1.6.0-dev1"
+DUCKDB_SOURCE_REVISION = "398033a962"
 
 
 def _load_launcher():

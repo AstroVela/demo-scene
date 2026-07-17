@@ -1,219 +1,51 @@
 create or replace view int_claim_material_facts as
--- Define the material-enrichment contract shared by Local and Ray execution.
--- The orchestrator runs row-level enrichment through Vane, then reuses the aggregate below.
-with claims as (
-  select * from stg_claims
-),
-
-materials as (
-  select * from stg_claim_materials
-),
-
-run_config as (
-  select * from stg_run_config
-),
-
-object_input_facts as (
-  -- Validate supported roles and the configured MinIO bucket before object reads.
+-- Join Runner-produced UDF facts, then aggregate one deterministic row per claim.
+with row_facts as (
   select
-    materials.*,
-    run_config.minio_bucket,
-    supported_role_media and material_locator_valid
-      and bucket = run_config.minio_bucket as runtime_locator_valid
-  from materials
-  cross join run_config
-),
-
-object_probe_inputs as (
-  -- Restrict MinIO existence and hash probes to trusted locators.
-  select
-    claim_id,
-    material_index,
-    cast(bucket as varchar) as bucket,
-    cast(object_key as varchar) as object_key
-  from object_input_facts
-  where runtime_locator_valid
-),
-
-object_probe_results as (
-  select
-    claim_id,
-    material_index,
-    minio_object_exists(bucket, object_key) as object_exists
-  from object_probe_inputs
-),
-
-object_facts as (
-  select
-    object_input_facts.*,
-    coalesce(object_probe_results.object_exists, false) as object_exists
-  from object_input_facts
-  left join object_probe_results using (claim_id, material_index)
-),
-
-hash_inputs as (
-  select
-    claim_id,
-    material_index,
-    cast(bucket as varchar) as bucket,
-    cast(object_key as varchar) as object_key
-  from object_facts
-  where object_exists
-),
-
-hash_results as (
-  select
-    claim_id,
-    material_index,
-    minio_object_sha256(bucket, object_key) as object_sha256
-  from hash_inputs
-),
-
-hash_facts as (
-  select
-    object_facts.*,
-    hash_results.object_sha256
-  from object_facts
-  left join hash_results using (claim_id, material_index)
-),
-
-photo_quality_inputs as (
-  -- Select available JPEG damage photos for deterministic quality analysis.
-  select
-    claim_id,
-    material_index,
-    cast(bucket as varchar) as bucket,
-    cast(object_key as varchar) as object_key
-  from hash_facts
-  where object_exists
-    and role = 'damage_photo'
-    and media_type = 'image/jpeg'
-),
-
-photo_quality_results as (
-  select
-    claim_id,
-    material_index,
-    photo_quality_json(bucket, object_key) as photo_quality_json
-  from photo_quality_inputs
-),
-
-document_ocr_inputs as (
-  -- Select available PNG supporting documents for OCR.
-  select
-    claim_id,
-    material_index,
-    cast(bucket as varchar) as bucket,
-    cast(object_key as varchar) as object_key
-  from hash_facts
-  where object_exists
-    and role = 'supporting_document'
-    and media_type = 'image/png'
-),
-
-document_ocr_results as (
-  select
-    claim_id,
-    material_index,
-    document_ocr_json(bucket, object_key) as document_ocr_json
-  from document_ocr_inputs
-),
-
-quality_facts as (
-  select
-    hash_facts.*,
-    photo_quality_results.photo_quality_json,
-    document_ocr_results.document_ocr_json
-  from hash_facts
-  left join photo_quality_results using (claim_id, material_index)
-  left join document_ocr_results using (claim_id, material_index)
-),
-
-document_field_inputs as (
-  -- Convert OCR output into the claim fields required by the rules.
-  select
-    claim_id,
-    material_index,
-    cast(document_ocr_json as varchar) as document_ocr_text
-  from quality_facts
-  where document_ocr_json is not null
-),
-
-document_field_results as (
-  select
-    claim_id,
-    material_index,
-    document_fields_json(document_ocr_text) as document_fields_json
-  from document_field_inputs
-),
-
-document_field_facts as (
-  select
-    quality_facts.*,
-    document_field_results.document_fields_json
-  from quality_facts
-  left join document_field_results using (claim_id, material_index)
-),
-
-document_quality_inputs as (
-  -- Check extracted fields and OCR confidence against runtime requirements.
-  select
-    document_field_facts.claim_id,
-    document_field_facts.material_index,
-    cast(document_ocr_json as varchar) as document_ocr_text,
-    cast(document_fields_json as varchar) as document_fields_text,
-    cast(document_field_facts.claim_id as varchar) as claim_id_text,
-    cast(run_config.required_fields_json as varchar) as required_fields_text,
-    cast(run_config.minimum_text_confidence as double)
-      as minimum_text_confidence
-  from document_field_facts
-  cross join run_config
-  where document_fields_json is not null
-),
-
-document_quality_results as (
-  select
-    claim_id,
-    material_index,
-    document_quality_json(
-      document_ocr_text,
-      document_fields_text,
-      claim_id_text,
-      required_fields_text,
-      minimum_text_confidence
-    ) as document_quality_json
-  from document_quality_inputs
-),
-
-document_quality_facts as (
-  select
-    document_field_facts.*,
-    document_quality_results.document_quality_json
-  from document_field_facts
-  left join document_quality_results using (claim_id, material_index)
-),
-
-row_facts as (
-  -- Convert enrichment JSON into typed, rule-ready material flags.
-  select
-    *,
+    objects.*,
+    hashes.object_sha256,
+    photos.photo_quality_json,
+    ocr.document_ocr_json,
+    fields.document_fields_json,
+    document_quality.document_quality_json,
     coalesce(
-      try_cast(json_extract_string(photo_quality_json, '$.photo_usable') as boolean),
+      try_cast(
+        json_extract_string(photos.photo_quality_json, '$.photo_usable')
+        as boolean
+      ),
       false
     ) as photo_usable,
     coalesce(
-      try_cast(json_extract_string(photo_quality_json, '$.quality_score') as double),
+      try_cast(
+        json_extract_string(photos.photo_quality_json, '$.quality_score')
+        as double
+      ),
       0.0
     ) as photo_quality_score,
     coalesce(
-      try_cast(json_extract_string(document_quality_json, '$.document_usable') as boolean),
+      try_cast(
+        json_extract_string(
+          document_quality.document_quality_json,
+          '$.document_usable'
+        ) as boolean
+      ),
       false
     ) as document_usable
-  from document_quality_facts
+  from int_claim_object_facts as objects
+  left join int_claim_object_hash_udf as hashes
+    using (claim_id, material_index)
+  left join int_claim_photo_quality_udf as photos
+    using (claim_id, material_index)
+  left join int_claim_document_ocr_udf as ocr
+    using (claim_id, material_index)
+  left join int_claim_document_fields_udf as fields
+    using (claim_id, material_index)
+  left join int_claim_document_quality_udf as document_quality
+    using (claim_id, material_index)
 ),
 
 aggregated as (
-  -- Collapse file-level facts into one claim row and build ordered AI photo inputs.
+  -- Collapse file-level facts and construct ordered, verified AI photo inputs.
   select
     claims.claim_id,
     claims.scenario,
@@ -352,8 +184,8 @@ aggregated as (
           and row_facts.photo_usable
       )
     ) as usable_photo_inputs_json
-  from claims
-  cross join run_config
+  from stg_claims as claims
+  cross join stg_run_config as run_config
   left join row_facts on claims.claim_id = row_facts.claim_id
   group by
     claims.claim_id,
@@ -382,4 +214,4 @@ select
     and readable_photo_count = required_photo_count
     and usable_photo_count = required_photo_count
     and usable_document_count = required_document_count as model_input_usable
-from aggregated
+from aggregated;

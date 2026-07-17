@@ -313,7 +313,6 @@ def build_evidence_ai_relation(
     source: SourceBundle,
     config: RuntimeConfig,
     *,
-    prompt_function: Callable[..., Any] | None = None,
     health_probe: Callable[[AiConfig], None] = probe_qwen,
     object_store: Any | None = None,
     request_relation_factory: Callable[[pa.Table], Any] | None = None,
@@ -352,7 +351,6 @@ def build_evidence_ai_relation(
         max_tokens=config.ai.max_tokens,
         on_error="raise",
     )
-    prompt_callable = prompt_function or vane.ai.prompt
     completed: list[tuple[EvidenceAiRequest, str]] = []
     for request in requests:
         current_request = request
@@ -364,7 +362,7 @@ def build_evidence_ai_relation(
                 if request_relation_factory is None
                 else request_relation_factory(request_table)
             )
-            result = prompt_callable(
+            result = vane.ai.prompt(
                 relation,
                 "prompt_text",
                 image_columns=["image_bytes"],
