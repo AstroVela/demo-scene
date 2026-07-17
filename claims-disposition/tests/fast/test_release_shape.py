@@ -39,7 +39,7 @@ def test_packaging_declares_every_direct_runtime_dependency():
     assert (PROJECT_ROOT / "requirements.txt").read_text(
         encoding="utf-8"
     ).splitlines() == [
-        "# Install the pinned TestPyPI Vane wheel first; see docs/runbook.md.",
+        "# Vane resolves from public PyPI through pyproject.toml; see docs/runbook.md.",
         "-e .[test]",
     ]
 
@@ -47,8 +47,7 @@ def test_packaging_declares_every_direct_runtime_dependency():
 def test_runbooks_document_a_fresh_environment_and_all_services():
     required_fragments = (
         "python3.12 -m venv .venv",
-        "https://test.pypi.org/simple/",
-        "--extra-index-url https://pypi.org/simple/",
+        "python -m pip install vane-ai",
         PINNED_VANE,
         "python -m pip install -r requirements.txt",
         "python -m pip check",
@@ -56,14 +55,19 @@ def test_runbooks_document_a_fresh_environment_and_all_services():
         "python scripts/run_demo.py run",
         "python scripts/run_demo.py verify",
         "python scripts/run_demo.py e2e",
+        "runner: local",
+        "runner: ray",
         "127.0.0.1:5432",
         "127.0.0.1:9000",
         "127.0.0.1:8001",
         "v1.6.0-dev1",
         "398033a962",
+        "vane.ai.load_provider",
     )
+    obsolete_index = ".".join(("test", "pypi", "org"))
     for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
+        assert obsolete_index not in text.lower()
         for required in required_fragments:
             assert required in text, f"{name} is missing {required!r}"
 

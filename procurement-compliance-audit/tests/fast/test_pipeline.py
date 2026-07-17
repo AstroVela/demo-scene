@@ -140,7 +140,7 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
     def configure_runner(*, runner):
         events.append(f"configure:{runner}")
 
-    def attach_functions(connection, _config):
+    def attach_functions(connection, _config, _local_ocr_results):
         events.append("attach_functions")
 
         def evidence_ocr(_bucket, object_key):
@@ -187,6 +187,7 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
         runtime_function_attacher=attach_functions,
         ai_relation_builder=build_ai,
         source_loader=lambda _config: source,
+        local_ocr_result_builder=lambda _source, _config: {},
         relation_materializer=lambda relation: relation.to_arrow_table(),
     )
 
@@ -216,7 +217,7 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
     )
     source, store = _source_and_store()
 
-    def attach_functions(connection, _config):
+    def attach_functions(connection, _config, _local_ocr_results):
         def evidence_ocr(_bucket, object_key):
             if object_key.endswith("expert_recommendation.png"):
                 return stable_json(
@@ -275,6 +276,7 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
             runtime_function_attacher=attach_functions,
             ai_relation_builder=build_ai,
             source_loader=lambda _config: source,
+            local_ocr_result_builder=lambda _source, _config: {},
             relation_materializer=lambda relation: relation.to_arrow_table(),
         )
 

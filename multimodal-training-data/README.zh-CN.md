@@ -23,6 +23,8 @@ Relation filter、聚合和 writer 生成发布与拒绝记录。
 
 需要 Python 3.10 或更高版本。在当前目录运行：
 
+`requirements.txt` 会从公共 PyPI 安装已验证的 `vane-ai==0.1.0a1`；也可以直接执行 `pip install vane-ai` 安装 Vane。
+
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip

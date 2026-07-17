@@ -27,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_result(result: PipelineResult) -> None:
+def _print_result(result: PipelineResult, *, runner: str) -> None:
     summary = result.summary
     print("Vane Procurement Audit SQL Demo")
     print(f"Project: {summary['title']} ({summary['project_id']})")
@@ -42,9 +42,14 @@ def _print_result(result: PipelineResult) -> None:
     )
     print(f"Outputs: {result.findings_path} | {result.summary_path}")
     print("Sources: PostgreSQL business rows + MinIO evidence objects")
+    print(f"Runner: {runner}")
     print("Vane capabilities exercised:")
-    print("  [stateful UDF] RapidOCR engine reused across evidence images")
-    print("  [AI Function] Qwen multimodal fact extraction from PNG evidence")
+    if runner == "local":
+        print("  [driver OCR] RapidOCR results exposed through a Vane SQL Function")
+        print("  [Vane provider] Qwen multimodal fact extraction from PNG evidence")
+    else:
+        print("  [stateful UDF] RapidOCR engine reused across evidence images")
+        print("  [AI Function] Qwen multimodal fact extraction from PNG evidence")
     print("  [stateless UDF] Strict AI JSON contract validation")
     print("  [SQL] Score bias, winner impact, findings, and project summary")
 
@@ -57,7 +62,7 @@ def _run(arguments: Sequence[str]) -> int:
     except Exception as exc:
         print(f"demo failed: {exc}", file=sys.stderr)
         return 1
-    _print_result(result)
+    _print_result(result, runner=config.runner)
     return 0
 
 

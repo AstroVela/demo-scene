@@ -28,6 +28,8 @@ schema、SHA-256、行数、许可证、数据分类和预期结果记录在
 
 需要 Python 3.10 或更高版本：
 
+`requirements.txt` 会从公共 PyPI 安装已验证的 `vane-ai==0.1.0a1`；也可以直接执行 `pip install vane-ai` 安装 Vane。
+
 ~~~bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip

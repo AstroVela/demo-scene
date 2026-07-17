@@ -20,7 +20,10 @@ def test_checked_in_config_selects_local_runner():
 def test_config_rejects_unknown_runner(tmp_path):
     text = (PROJECT_ROOT / "runtime.yml").read_text(encoding="utf-8")
     path = tmp_path / "runtime.yml"
-    path.write_text(text.replace("runner: local", "runner: threaded"), encoding="utf-8")
+    path.write_text(
+        text.replace("runner: local", "runner: threaded"),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ConfigError, match="runner"):
         load_runtime_config(path)

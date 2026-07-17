@@ -1,2 +1,2 @@
-# Install the pinned TestPyPI Vane wheel first; see docs/runbook.md.
+# Vane resolves from public PyPI through pyproject.toml; see docs/runbook.md.
 -e .[test]

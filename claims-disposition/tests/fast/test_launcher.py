@@ -30,7 +30,7 @@ def _complete_vane_api() -> SimpleNamespace:
         cls=lambda: None,
         attach_function=lambda: None,
         configure=lambda: None,
-        ai=SimpleNamespace(prompt=lambda: None),
+        ai=SimpleNamespace(prompt=lambda: None, load_provider=lambda: None),
     )
 
 
@@ -59,6 +59,8 @@ def test_launcher_freezes_exact_runtime_identifiers():
     assert launcher.EXPECTED_DUCKDB_PYTHON_VERSION == VANE_VERSION
     assert launcher.EXPECTED_DUCKDB_ENGINE_VERSION == DUCKDB_ENGINE_VERSION
     assert launcher.EXPECTED_DUCKDB_SOURCE_REVISION == DUCKDB_SOURCE_REVISION
+    assert launcher.INSTALL_HINT == "python -m pip install vane-ai"
+    assert launcher.DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS == "60000"
 
 
 def test_launcher_rejects_wrong_python_version_with_install_help():
@@ -71,8 +73,9 @@ def test_launcher_rejects_wrong_python_version_with_install_help():
     assert "Python version mismatch" in message
     assert sys.executable in message
     assert sys.prefix in message
-    assert "https://test.pypi.org/simple/" in message
-    assert f"vane-ai=={VANE_VERSION}" in message
+    assert "python -m pip install vane-ai" in message
+    obsolete_index = ".".join(("test", "pypi", "org"))
+    assert obsolete_index not in message
     assert "python -m pip install -r requirements.txt" in message
 
 
@@ -156,6 +159,18 @@ def test_launcher_rejects_missing_ai_prompt():
     with pytest.raises(RuntimeError, match=r"vane\.ai\.prompt"):
         launcher.validate_runtime_api(
             vane_without_prompt,
+            SimpleNamespace(ray_cxx=True),
+        )
+
+
+def test_launcher_rejects_missing_ai_provider_loader():
+    launcher = _load_launcher()
+    vane_without_loader = _complete_vane_api()
+    vane_without_loader.ai = SimpleNamespace(prompt=lambda: None)
+
+    with pytest.raises(RuntimeError, match=r"vane\.ai\.load_provider"):
+        launcher.validate_runtime_api(
+            vane_without_loader,
             SimpleNamespace(ray_cxx=True),
         )
 

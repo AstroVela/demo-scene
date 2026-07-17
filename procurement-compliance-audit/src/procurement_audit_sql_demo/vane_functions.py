@@ -319,7 +319,8 @@ class EvidenceOcrActor:
         store_factory=MinioStore,
     ) -> None:
         self.store = store_factory(minio_config)
-        self.engine = (engine_factory or build_rapidocr)()
+        self._engine_factory = engine_factory or build_rapidocr
+        self.engine = None
 
     def __call__(self, bucket: str, object_key: str) -> str:
         try:
@@ -332,6 +333,8 @@ class EvidenceOcrActor:
         except (OSError, UnidentifiedImageError, SyntaxError, ValueError):
             return _unreadable_ocr("image_decode_failed")
         try:
+            if self.engine is None:
+                self.engine = self._engine_factory()
             return normalize_ocr_observations(self.engine(value))
         except Exception as exc:
             return _unreadable_ocr(f"ocr_engine_failed:{type(exc).__name__}")

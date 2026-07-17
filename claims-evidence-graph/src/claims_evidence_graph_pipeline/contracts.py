@@ -82,7 +82,7 @@ class RunConfig:
     profile: str = "baseline"
     batch_size: int = 8
     execution_backend: str = "local"
-    runner: str = ""
+    runner: str = "local"
     write_parquet: bool = True
     fail_on_warnings: bool = False
     photo_labels_path: Path | None = None

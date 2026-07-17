@@ -15,7 +15,7 @@ This runbook contains the exact environment, installation, model-service, config
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
-The TestPyPI Vane wheel targets CPython 3.12, Linux x86_64, and `manylinux_2_39`. Support for older glibc versions, other Python minor versions, or other CPU architectures is not guaranteed.
+The verified Vane release is published on public PyPI with x86_64 Linux wheels for CPython 3.10, 3.11, and 3.12, all tagged `manylinux_2_28` (glibc 2.28 or newer). This demo was installed and validated with CPython 3.12 in the environment shown above; source builds and other CPU architectures were not validated.
 
 Install the project-side Ubuntu tools:
 
@@ -37,15 +37,13 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-### 2. Install the verified Vane wheel
+### 2. Install Vane from public PyPI
 
 ```bash
-python -m pip install -i https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0a1
+python -m pip install vane-ai
 ```
 
-Keep both indexes so Vane comes from TestPyPI while ordinary dependencies resolve from PyPI. Keep the exact version because the launcher rejects runtimes not validated for this demo.
+No alternate package index is required. The command installs Vane from public PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1` runtime, and the launcher rejects other runtime identifiers.
 
 ### 3. Install the demo
 
@@ -62,7 +60,7 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `psycopg` | Read and initialize PostgreSQL raw tables |
 | `minio` | Read and initialize raw material objects in MinIO |
-| `rapidocr`, `onnxruntime` | Stateful CPU OCR actor |
+| `rapidocr`, `onnxruntime` | CPU OCR: driver-owned on Local, stateful Actor on Ray |
 | `pillow` | Image reads |
 | `pyarrow` | Relation/Python data boundary |
 | `pyyaml` | Strict `runtime.yml` loading |
@@ -163,7 +161,7 @@ All names, companies, and documents are synthetic. The score matrix guarantees t
 - `EXP-001` gives Jingwei 98 while other experts average 80, an 18-point deviation;
 - `SUP-ZJ-002` ranks first after removing `EXP-001`.
 
-At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`, `expert_scores`, and `evidence_files` tables plus the MinIO bucket `procurement-compliance-audit-fixtures`. `evidence_files.bucket/object_key` is the trusted PostgreSQL-to-MinIO locator. The pipeline, OCR actor, and AI request builder never read local paths.
+At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`, `expert_scores`, and `evidence_files` tables plus the MinIO bucket `procurement-compliance-audit-fixtures`. `evidence_files.bucket/object_key` is the trusted PostgreSQL-to-MinIO locator. The pipeline, OCR implementation, and AI request builder never read local paths.
 
 ## Relation contracts
 
@@ -221,28 +219,27 @@ The checked-in `runtime.yml` defines:
 | OCR | RapidOCR on CPU, minimum confidence `0.60` |
 | AI | OpenAI provider at `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-For a compatible distributed entry point, change:
+The checked-in configuration uses:
 
 ```yaml
 runner: local
 ```
 
-to:
+The checked-in value is `runner: local`; change it to `runner: ray` for the distributed path. Both modes were verified end to end with public `vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
 
-```yaml
-runner: ray
-```
+On Local, the pipeline creates one `EvidenceOcrActor` implementation on the driver, processes every trusted evidence locator once, and attaches the immutable results as `evidence_ocr_json(bucket, object_key)`. It also instantiates the configured model through Vane's public provider API and reuses one async client on the driver. This keeps native ONNX sessions and the async provider client outside LocalRunner subprocess boundaries.
 
-PostgreSQL/MinIO source contracts remain unchanged, and both modes use the same SQL and Relation pipeline. The pipeline attaches `EvidenceOcrActor` as `evidence_ocr_json(bucket, object_key)`; `int_evidence_ocr_udf.sql` calls it once per image as a direct Runner projection, and `int_evidence_ocr.sql` parses the materialized JSON. The response validator follows the same `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files, `Relation.write_parquet()` dispatches each direct UDF or AI relation through the active Runner, and results are registered in the driver's DuckDB catalog for the next pure SQL node. `vane-ai==0.1.0a1` is required because it preserves row-UDF passthrough columns on the Ray path. The staged stateful/stateless SQL UDF shape has been smoke-tested on both runners; a real multi-node target cluster still requires its own infrastructure smoke test.
+On Ray, `EvidenceOcrActor` is attached as the stateful `evidence_ocr_json(bucket, object_key)` expression and Qwen runs through `vane.ai.prompt`. The OCR engine initializes lazily inside its isolated Actor worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied another value, giving native Ray OCR workers enough time to shut down cleanly.
 
-The shared materializer uses the Runner-backed write API rather than a direct DuckDB export, so Local and Ray follow the same execution boundary.
+In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per image and `int_evidence_ocr.sql` parses the same materialized JSON. Response validation keeps the `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files and Runner results are registered in the driver's DuckDB catalog for the next pure SQL node. Switching Runner changes execution placement, not SQL or output contracts. A real multi-node target cluster still requires its own infrastructure smoke test.
 
 ## Troubleshooting
 
 | Symptom | Resolution |
 | --- | --- |
-| `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64 and Python 3.12, then use the complete TestPyPI plus extra-index command |
-| Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall the pinned wheel; the launcher reports the current interpreter, prefix, and expected/actual values |
+| `No matching distribution found for vane-ai` | This demo requires CPython 3.12; for the published wheel, confirm x86_64 Linux and glibc 2.28 or newer, then run `python -m pip install vane-ai` against public PyPI |
+| Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall from public PyPI; the launcher reports the current interpreter, prefix, and expected/actual values |
+| Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a Ray cluster with enough CPU, heap, and object-store capacity; this real OCR flow was validated with 8 CPUs and a 2 GiB object store |
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
 | PostgreSQL connection, authentication, or table initialization failure | Check the DSN, database/role, port, and schema/table read/write permissions |
 | MinIO connection, authentication, or object-read failure | Check endpoint, HTTP/TLS, access key, and bucket list/read/write/delete permissions |
@@ -260,7 +257,7 @@ The shared materializer uses the Runner-backed write API rather than a direct Du
 | DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
-Any identity or required Vane API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
+The required API surface includes `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.load_provider`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any identity or API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
 
 ## Data, credentials, and privacy
 

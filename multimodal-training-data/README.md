@@ -25,6 +25,8 @@ lightweight processors cover UTF-8 text, SVG dimensions, and PCM WAV metadata.
 
 Python 3.10 or newer is required. From this directory:
 
+`requirements.txt` installs the validated `vane-ai==0.1.0a1` release from public PyPI. Vane can also be installed directly with `pip install vane-ai`.
+
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip

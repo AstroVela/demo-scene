@@ -43,5 +43,5 @@ tqdm==4.68.3
 traitlets==5.15.1
 typing-inspection==0.4.2
 typing_extensions==4.15.0
-vane-ai==0.1.0.dev20260714234347
+vane-ai==0.1.0a1
 wcwidth==0.8.1

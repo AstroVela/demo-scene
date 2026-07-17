@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Demo with the pinned Vane package in the current Python environment."""
+"""Run the demo with the validated public-PyPI Vane package."""
 
 from __future__ import annotations
 
@@ -26,11 +26,8 @@ EXPECTED_VANE_API_VERSION = "0.1.0a1"
 EXPECTED_DUCKDB_PYTHON_VERSION = "0.1.0a1"
 EXPECTED_DUCKDB_ENGINE_VERSION = "v1.6.0-dev1"
 EXPECTED_DUCKDB_SOURCE_REVISION = "398033a962"
-INSTALL_HINT = (
-    "python -m pip install -i https://test.pypi.org/simple/ "
-    "--extra-index-url https://pypi.org/simple/ "
-    f"vane-ai=={EXPECTED_VANE_DISTRIBUTION_VERSION}"
-)
+DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS = "60000"
+INSTALL_HINT = "python -m pip install vane-ai"
 
 
 def _runtime_error(message: str) -> RuntimeError:
@@ -94,8 +91,12 @@ def validate_runtime_api(vane_module: object, duckdb_module: object) -> None:
             "real Vane runtime is missing callable API: "
             + ", ".join(f"vane.{name}" for name in missing)
         )
-    if not callable(getattr(getattr(vane_module, "ai", None), "prompt", None)):
-        raise _runtime_error("real Vane runtime is missing callable vane.ai.prompt")
+    ai_module = getattr(vane_module, "ai", None)
+    for name in ("prompt", "load_provider"):
+        if not callable(getattr(ai_module, name, None)):
+            raise _runtime_error(
+                f"real Vane runtime is missing callable vane.ai.{name}"
+            )
     if not hasattr(duckdb_module, "ray_cxx"):
         raise _runtime_error("real Vane runtime DuckDB is missing duckdb.ray_cxx")
 
@@ -144,7 +145,7 @@ def require_real_vane_runtime() -> None:
     except RuntimeError:
         raise
     except Exception as exc:
-        raise _runtime_error(f"cannot identify the pinned Vane runtime: {exc}") from exc
+        raise _runtime_error(f"cannot identify the validated Vane runtime: {exc}") from exc
 
     validate_runtime_api(vane, duckdb)
     require_package_from_current_environment("vane", getattr(vane, "__file__", None))
@@ -177,6 +178,10 @@ def configure_loopback_network(base_url: str) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """Validate the runtime, configure loopback access, and dispatch a command."""
 
+    os.environ.setdefault(
+        "VANE_UDF_UNREGISTER_TIMEOUT_MS",
+        DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS,
+    )
     require_real_vane_runtime()
 
     from claims_disposition_sql_pipeline.config import load_runtime_config
