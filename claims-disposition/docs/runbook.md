@@ -15,7 +15,7 @@ This runbook contains the exact environment, installation, service, configuratio
 | MinIO | `127.0.0.1:9000` |
 | Model service | Qwen2.5-VL-3B on an NVIDIA CUDA GPU at `127.0.0.1:8001` |
 
-The verified Vane release is published on public PyPI. Its Linux wheel targets CPython 3.12, x86_64, and `manylinux_2_39`; a matching wheel is not promised for older glibc, another Python minor version, or another CPU architecture.
+The verified Vane release is published on public PyPI with x86_64 Linux wheels for CPython 3.10, 3.11, and 3.12, all tagged `manylinux_2_28` (glibc 2.28 or newer). This demo was installed and validated with CPython 3.12 in the environment shown above; source builds and other CPU architectures were not validated.
 
 Install the project-side Ubuntu tools:
 
@@ -218,7 +218,7 @@ The writer validates all nine columns, types, enums, confidence, and timestamps 
 
 | Symptom | Action |
 | --- | --- |
-| `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64, CPython 3.12, and glibc 2.39 or newer, then run `python -m pip install vane-ai` against public PyPI |
+| `No matching distribution found for vane-ai` | This demo requires CPython 3.12; for the published wheel, confirm x86_64 Linux and glibc 2.28 or newer, then run `python -m pip install vane-ai` against public PyPI |
 | Python/Vane/DuckDB version mismatch | Reactivate the project environment and reinstall from public PyPI; the launcher prints the interpreter, prefix, expected/actual values, and install command |
 | Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a Ray cluster with enough CPU, heap, and object-store capacity; this real OCR flow was validated with 8 CPUs and a 2 GiB object store |
 | Vane or DuckDB resolves outside the current environment | Remove inherited `PYTHONPATH`, activate `.venv`, and repeat both installation steps |

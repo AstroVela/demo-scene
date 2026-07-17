@@ -15,7 +15,7 @@ This runbook contains the exact environment, installation, model-service, config
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
-The verified Vane release is published on public PyPI. Its Linux wheel targets CPython 3.12, x86_64, and `manylinux_2_39`; support for older glibc versions, other Python minor versions, or other CPU architectures is not guaranteed.
+The verified Vane release is published on public PyPI with x86_64 Linux wheels for CPython 3.10, 3.11, and 3.12, all tagged `manylinux_2_28` (glibc 2.28 or newer). This demo was installed and validated with CPython 3.12 in the environment shown above; source builds and other CPU architectures were not validated.
 
 Install the project-side Ubuntu tools:
 
@@ -237,7 +237,7 @@ In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per ima
 
 | Symptom | Resolution |
 | --- | --- |
-| `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64, Python 3.12, and glibc 2.39 or newer, then run `python -m pip install vane-ai` against public PyPI |
+| `No matching distribution found for vane-ai` | This demo requires CPython 3.12; for the published wheel, confirm x86_64 Linux and glibc 2.28 or newer, then run `python -m pip install vane-ai` against public PyPI |
 | Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall from public PyPI; the launcher reports the current interpreter, prefix, and expected/actual values |
 | Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a Ray cluster with enough CPU, heap, and object-store capacity; this real OCR flow was validated with 8 CPUs and a 2 GiB object store |
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |

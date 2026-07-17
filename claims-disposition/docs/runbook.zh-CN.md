@@ -15,7 +15,7 @@
 | MinIO | `127.0.0.1:9000` |
 | 模型服务 | NVIDIA CUDA GPU 上的 Qwen2.5-VL-3B，监听 `127.0.0.1:8001` |
 
-已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python 次版本或其他 CPU 架构。
+已验证的 Vane 正式发布包位于公共 PyPI，提供面向 CPython 3.10、3.11 和 3.12 的 x86_64 Linux wheel，平台标签均为 `manylinux_2_28`（glibc 2.28 或更新）。本 Demo 仍使用上表中的 CPython 3.12 完成安装与验证；源码构建和其他 CPU 架构未验证。
 
 安装项目侧 Ubuntu 工具：
 
@@ -218,7 +218,7 @@ Writer 会在打开发布事务前校验九列、类型、枚举、置信度和�
 
 | 现象 | 处理方式 |
 | --- | --- |
-| `No matching distribution found for vane-ai` | 确认 Ubuntu 24.04 x86_64、CPython 3.12、glibc 2.39 或更新，然后对公共 PyPI 执行 `python -m pip install vane-ai` |
+| `No matching distribution found for vane-ai` | 本 Demo 要求 CPython 3.12；使用已发布 wheel 时请确认 x86_64 Linux 和 glibc 2.28 或更新，然后对公共 PyPI 执行 `python -m pip install vane-ai` |
 | Python/Vane/DuckDB 版本不匹配 | 重新激活项目环境并从公共 PyPI 重装；Launcher 会输出解释器、prefix、expected/actual 和安装命令 |
 | Ray 无法分配内存或满足 query demand | 停止遗留 Ray 进程、释放宿主机内存，或连接具备足够 CPU、heap 和 object store 的 Ray 集群；本次真实 OCR 验证使用 8 CPU 和 2 GiB object store |
 | Vane 或 DuckDB 指向当前环境之外 | 清除继承的 `PYTHONPATH`，激活 `.venv`，重新执行两步安装 |
