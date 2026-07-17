@@ -50,6 +50,8 @@ def test_ocr_actor_reuses_one_engine_for_multiple_minio_objects():
         engine_factory=factory,
         store_factory=lambda _config: store,
     )
+    assert calls == {"factory": 0, "engine": 0}
+
     first = json.loads(actor("evidence", "one.png"))
     second = json.loads(actor("evidence", "two.png"))
 

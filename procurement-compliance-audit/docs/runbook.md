@@ -15,7 +15,9 @@ This runbook contains the exact environment, installation, model-service, config
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
-The TestPyPI Vane wheel targets CPython 3.12, Linux x86_64, and `manylinux_2_39`. Support for older glibc versions, other Python minor versions, or other CPU architectures is not guaranteed.
+The verified Vane release is published on public PyPI. Its Linux wheel targets
+CPython 3.12, x86_64, and `manylinux_2_39`; support for older glibc versions,
+other Python minor versions, or other CPU architectures is not guaranteed.
 
 Install the project-side Ubuntu tools:
 
@@ -37,15 +39,15 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-### 2. Install the verified Vane wheel
+### 2. Install Vane from public PyPI
 
 ```bash
-python -m pip install -i https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0a1
+python -m pip install vane-ai
 ```
 
-Keep both indexes so Vane comes from TestPyPI while ordinary dependencies resolve from PyPI. Keep the exact version because the launcher rejects runtimes not validated for this demo.
+No alternate package index is required. The command installs Vane from public
+PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1`
+runtime, and the launcher rejects other runtime identifiers.
 
 ### 3. Install the demo
 
@@ -214,35 +216,47 @@ The checked-in `runtime.yml` defines:
 
 | Setting | Default |
 | --- | --- |
-| Runner | `local` |
+| Runner | `ray` |
 | PostgreSQL raw tables | `procurement_audit_raw.projects`, `suppliers`, `expert_scores`, `evidence_files` |
 | MinIO | `127.0.0.1:9000`, bucket `procurement-compliance-audit-fixtures` |
 | Output directory | `output` |
 | OCR | RapidOCR on CPU, minimum confidence `0.60` |
 | AI | OpenAI provider at `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-For a compatible distributed entry point, change:
-
-```yaml
-runner: local
-```
-
-to:
+The checked-in configuration uses:
 
 ```yaml
 runner: ray
 ```
 
-PostgreSQL/MinIO source contracts remain unchanged, and both modes use the same SQL and Relation pipeline. The pipeline attaches `EvidenceOcrActor` as `evidence_ocr_json(bucket, object_key)`; `int_evidence_ocr_udf.sql` calls it once per image as a direct Runner projection, and `int_evidence_ocr.sql` parses the materialized JSON. The response validator follows the same `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files, `Relation.write_parquet()` dispatches each direct UDF or AI relation through the active Runner, and results are registered in the driver's DuckDB catalog for the next pure SQL node. `vane-ai==0.1.0a1` is required because it preserves row-UDF passthrough columns on the Ray path. The staged stateful/stateless SQL UDF shape has been smoke-tested on both runners; a real multi-node target cluster still requires its own infrastructure smoke test.
+The SQL and Relation pipeline remains Runner-independent and still accepts
+`runner: local`, but the real RapidOCR/ONNX path for the public Vane release was
+validated on Ray. The OCR engine is initialized lazily inside its isolated
+Actor worker instead of being serialized from the driver. The launcher also
+sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied
+another value, giving native OCR workers enough time to shut down cleanly.
 
-The shared materializer uses the Runner-backed write API rather than a direct DuckDB export, so Local and Ray follow the same execution boundary.
+PostgreSQL/MinIO source contracts remain unchanged. The pipeline attaches
+`EvidenceOcrActor` as `evidence_ocr_json(bucket, object_key)`;
+`int_evidence_ocr_udf.sql` calls it once per image as a direct Runner
+projection, and `int_evidence_ocr.sql` parses the materialized JSON. The
+response validator follows the same `int_conflict_validation_udf.sql` then
+`int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary
+Parquet files, `Relation.write_parquet()` dispatches each direct UDF or AI
+relation through the active Runner, and results are registered in the driver's
+DuckDB catalog for the next pure SQL node. A real multi-node target cluster
+still requires its own infrastructure smoke test.
+
+The shared materializer uses the Runner-backed write API rather than a direct
+DuckDB export, so changing Runner does not change the relation boundary.
 
 ## Troubleshooting
 
 | Symptom | Resolution |
 | --- | --- |
-| `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64 and Python 3.12, then use the complete TestPyPI plus extra-index command |
-| Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall the pinned wheel; the launcher reports the current interpreter, prefix, and expected/actual values |
+| `No matching distribution found for vane-ai` | Confirm Ubuntu 24.04 x86_64, Python 3.12, and glibc 2.39 or newer, then run `python -m pip install vane-ai` against public PyPI |
+| Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall from public PyPI; the launcher reports the current interpreter, prefix, and expected/actual values |
+| Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a Ray cluster with enough CPU, heap, and object-store capacity; this real OCR flow was validated with 8 CPUs and a 2 GiB object store |
 | A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
 | PostgreSQL connection, authentication, or table initialization failure | Check the DSN, database/role, port, and schema/table read/write permissions |
 | MinIO connection, authentication, or object-read failure | Check endpoint, HTTP/TLS, access key, and bucket list/read/write/delete permissions |

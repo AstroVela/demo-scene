@@ -15,7 +15,7 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls` and attached as a SQL-callable stateful expression. The strict response validator is registered with `@vane.func`, and Qwen is invoked through the `vane.ai.prompt` AI Function. The pipeline can be developed locally and moved to high-concurrency distributed execution by switching the Runner rather than rewriting its business logic.
+Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls` and attached as a SQL-callable stateful expression. The strict response validator is registered with `@vane.func`, and Qwen is invoked through the `vane.ai.prompt` AI Function. The checked-in real RapidOCR flow uses the `ray` Runner so the native ONNX engine is initialized inside an isolated Actor worker.
 
 ## Architecture
 
@@ -40,7 +40,7 @@ PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
 
 ## Run the demo
 
-The demo requires the verified Python/Vane environment plus running PostgreSQL, MinIO, and local Qwen services. Follow the [complete runbook](docs/runbook.md), then run:
+The demo installs Vane from public PyPI (`pip install vane-ai`) and requires running PostgreSQL, MinIO, and local Qwen services. Follow the [complete runbook](docs/runbook.md), then run:
 
 ```bash
 python scripts/run_demo.py e2e
@@ -58,7 +58,7 @@ output/audit_summary.jsonl   # 1 row
 ```text
 <project-root>/
 ├── runtime.yml
-│   # Configures the Vane Runner (local/ray), PostgreSQL, MinIO, OCR,
+│   # Configures the Vane Runner (Ray by default), PostgreSQL, MinIO, OCR,
 │   # Qwen, and the JSONL output directory.
 │
 ├── scripts/
@@ -157,7 +157,7 @@ output/audit_summary.jsonl   # 1 row
     # Covers source contracts, OCR Actor, AI contract, SQL DAG, Runner, and publication.
 ```
 
-The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → output_writer.py`. Vane attaches the reusable OCR actor and response validator as SQL expressions and lets Local and Ray share the same direct-UDF and AI Relation boundaries. Each UDF call is isolated in a visible `*_udf.sql` node; downstream SQL owns parsing, trusted-role filtering, score deviation, reranking, and audit rules. Python remains only for source/service I/O, AI request binding and retry, Runner materialization, and atomic output publication.
+The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → output_writer.py`. Vane attaches the reusable OCR actor and response validator as SQL expressions; the checked-in configuration executes those direct-UDF and AI Relation boundaries on Ray. Each UDF call is isolated in a visible `*_udf.sql` node; downstream SQL owns parsing, trusted-role filtering, score deviation, reranking, and audit rules. Python remains only for source/service I/O, AI request binding and retry, Runner materialization, and atomic output publication.
 
 ## Audit logic and boundaries
 

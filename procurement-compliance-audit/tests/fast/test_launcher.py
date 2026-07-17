@@ -41,6 +41,8 @@ def test_launcher_freezes_exact_runtime_identifiers():
     assert launcher.EXPECTED_DUCKDB_PYTHON_VERSION == "0.1.0a1"
     assert launcher.EXPECTED_DUCKDB_ENGINE_VERSION == "v1.6.0-dev1"
     assert launcher.EXPECTED_DUCKDB_SOURCE_REVISION == "398033a962"
+    assert launcher.INSTALL_HINT == "python -m pip install vane-ai"
+    assert launcher.DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS == "60000"
 
 
 @pytest.mark.parametrize(

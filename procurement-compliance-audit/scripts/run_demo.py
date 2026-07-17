@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the demo with the pinned Vane package from the current Python environment."""
+"""Run the demo with the validated public-PyPI Vane package."""
 
 from __future__ import annotations
 
@@ -26,11 +26,8 @@ EXPECTED_VANE_API_VERSION = "0.1.0a1"
 EXPECTED_DUCKDB_PYTHON_VERSION = "0.1.0a1"
 EXPECTED_DUCKDB_ENGINE_VERSION = "v1.6.0-dev1"
 EXPECTED_DUCKDB_SOURCE_REVISION = "398033a962"
-INSTALL_HINT = (
-    "python -m pip install -i https://test.pypi.org/simple/ "
-    "--extra-index-url https://pypi.org/simple/ "
-    f"vane-ai=={EXPECTED_VANE_DISTRIBUTION_VERSION}"
-)
+DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS = "60000"
+INSTALL_HINT = "python -m pip install vane-ai"
 
 
 def _runtime_error(message: str) -> RuntimeError:
@@ -110,7 +107,7 @@ def require_real_vane_runtime() -> None:
     except RuntimeError:
         raise
     except Exception as exc:
-        raise _runtime_error(f"cannot identify the pinned Vane runtime: {exc}") from exc
+        raise _runtime_error(f"cannot identify the validated Vane runtime: {exc}") from exc
     missing = [
         name
         for name in ("func", "cls", "attach_function", "configure")
@@ -148,6 +145,10 @@ def configure_loopback_network(base_url: str) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    os.environ.setdefault(
+        "VANE_UDF_UNREGISTER_TIMEOUT_MS",
+        DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS,
+    )
     require_real_vane_runtime()
     from procurement_audit_sql_demo.config import load_runtime_config
 

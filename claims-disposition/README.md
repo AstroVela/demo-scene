@@ -17,7 +17,7 @@ The synthetic fixture covers four workflow outcomes:
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. This demo is verified with both `local` and `ray`; the checked-in default remains `local`.
+Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. The checked-in real RapidOCR flow uses the `ray` Runner so the native ONNX engine is initialized inside an isolated Actor worker.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ stg_claims / stg_claim_materials / stg_run_config
 
 ## Run the demo
 
-The demo requires the verified Python/Vane environment plus running PostgreSQL, MinIO, and Qwen services. Follow the [complete runbook](docs/runbook.md) for installation and service setup, then run:
+The demo installs Vane from public PyPI (`pip install vane-ai`) and requires running PostgreSQL, MinIO, and Qwen services. Follow the [complete runbook](docs/runbook.md) for the validated environment and service setup, then run:
 
 ```bash
 python scripts/run_demo.py e2e
@@ -74,7 +74,7 @@ There is no AI mock fallback: unavailable services, unreadable images, invalid A
 ```text
 claims-disposition/
 ├── runtime.yml
-│   # Configures the Vane Runner (local/ray), PostgreSQL, MinIO, OCR, and Qwen.
+│   # Configures the Vane Runner (Ray by default), PostgreSQL, MinIO, OCR, and Qwen.
 │
 ├── scripts/
 │   └── run_demo.py

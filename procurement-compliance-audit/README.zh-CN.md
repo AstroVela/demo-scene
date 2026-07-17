@@ -15,7 +15,7 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，并挂载为 SQL 可直接调用的有状态表达式；严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 `vane.ai.prompt` AI Function 调用。同一条 Pipeline 可以先在单机开发，再通过切换 Runner 扩展到高并发分布式执行，而不需要重写业务逻辑。
+Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，并挂载为 SQL 可直接调用的有状态表达式；严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 `vane.ai.prompt` AI Function 调用。仓库中的真实 RapidOCR 流程默认使用 `ray` Runner，让原生 ONNX 引擎在隔离的 Actor worker 内初始化。
 
 ## 架构
 
@@ -40,7 +40,7 @@ PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
 
 ## 运行 Demo
 
-Demo 需要已验证的 Python/Vane 环境，以及正在运行的 PostgreSQL、MinIO 和本地 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备环境，然后执行：
+Demo 从公共 PyPI 安装 Vane（`pip install vane-ai`），并需要正在运行的 PostgreSQL、MinIO 和本地 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备已验证环境，然后执行：
 
 ```bash
 python scripts/run_demo.py e2e
@@ -58,7 +58,7 @@ output/audit_summary.jsonl   # 1 行
 ```text
 <项目根目录>/
 ├── runtime.yml
-│   # 配置 Vane Runner（local/ray）、PostgreSQL、MinIO、OCR、
+│   # 配置 Vane Runner（默认 Ray）、PostgreSQL、MinIO、OCR、
 │   # Qwen 和 JSONL 输出目录。
 │
 ├── scripts/
@@ -157,7 +157,7 @@ output/audit_summary.jsonl   # 1 行
     # 覆盖来源合同、OCR Actor、AI 合同、SQL DAG、Runner 编排和输出发布。
 ```
 
-执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Vane 把可复用 OCR Actor 和响应校验器挂载为 SQL 表达式，让 Local 和 Ray 共用直接 UDF 与 AI Relation 边界。每次 UDF 调用都位于清晰可见的 `*_udf.sql` 节点；下游 SQL 负责解析、可信角色过滤、评分偏差、排名变化和审计规则。Python 只保留来源/服务 I/O、AI 请求绑定与重试、Runner 物化和原子发布。
+执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Vane 把可复用 OCR Actor 和响应校验器挂载为 SQL 表达式；仓库配置在 Ray 上执行这些直接 UDF 与 AI Relation 边界。每次 UDF 调用都位于清晰可见的 `*_udf.sql` 节点；下游 SQL 负责解析、可信角色过滤、评分偏差、排名变化和审计规则。Python 只保留来源/服务 I/O、AI 请求绑定与重试、Runner 物化和原子发布。
 
 ## 审计逻辑与边界
 

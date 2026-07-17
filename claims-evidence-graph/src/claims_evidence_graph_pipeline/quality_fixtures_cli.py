@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         choices=["local", "ray_task", "ray_actor"],
         default="local",
     )
-    parser.add_argument("--runner", choices=["", "ray"], default="")
+    parser.add_argument("--runner", choices=["local", "ray"], default="local")
     parser.add_argument("--skip-parquet", action="store_true")
     parser.add_argument("--skip-run", action="store_true")
     return parser.parse_args()

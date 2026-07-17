@@ -578,7 +578,8 @@ def normalize_ocr_observations(observations: Any) -> str:
 class DocumentOcrActor:
     def __init__(self, minio_config: MinioConfig, engine_factory=None) -> None:
         self.store = MinioStore(minio_config)
-        self.engine = (engine_factory or _build_rapidocr)()
+        self._engine_factory = engine_factory or _build_rapidocr
+        self.engine = None
 
     def __call__(self, bucket: str, object_key: str) -> str:
         value = self.store.get_bytes(bucket, object_key)
@@ -597,5 +598,7 @@ class DocumentOcrActor:
                     "error_type": type(exc).__name__,
                 }
             )
+        if self.engine is None:
+            self.engine = self._engine_factory()
         observations = self.engine(value)
         return normalize_ocr_observations(observations)

@@ -190,7 +190,7 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
         relation_materializer=lambda relation: relation.to_arrow_table(),
     )
 
-    assert events == ["configure:local", "attach_functions", "ai:2"]
+    assert events == ["configure:ray", "attach_functions", "ai:2"]
     assert len(ocr_calls) == 2
     assert all(object_key.endswith(".png") for object_key in ocr_calls)
     assert result.executed_relations == CORE_RELATIONS

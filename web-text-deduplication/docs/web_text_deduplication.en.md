@@ -239,6 +239,9 @@ representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
 
 Install dependencies and run the offline fixture:
 
+The requirements file resolves the validated Vane release from public PyPI;
+`pip install vane-ai` is the equivalent direct Vane installation command.
+
 ~~~bash
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt

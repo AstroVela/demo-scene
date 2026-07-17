@@ -17,7 +17,7 @@
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。本 Demo 已验证 `local` 和 `ray` 两种 Runner，仓库默认仍为 `local`。
+Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。仓库中的真实 RapidOCR 流程默认使用 `ray` Runner，让原生 ONNX 引擎在隔离的 Actor worker 内初始化。
 
 ## 架构
 
@@ -53,7 +53,7 @@ stg_claims / stg_claim_materials / stg_run_config
 
 ## 运行 Demo
 
-Demo 需要已验证的 Python/Vane 环境，以及正在运行的 PostgreSQL、MinIO 和 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备环境，然后执行：
+Demo 从公共 PyPI 安装 Vane（`pip install vane-ai`），并需要正在运行的 PostgreSQL、MinIO 和 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备已验证环境，然后执行：
 
 ```bash
 python scripts/run_demo.py e2e
@@ -74,7 +74,7 @@ verified 4 claim dispositions: CLM-APPROVE=approve_for_payment, CLM-DENY=deny_cl
 ```text
 claims-disposition/
 ├── runtime.yml
-│   # 配置 Vane Runner（local/ray）、PostgreSQL、MinIO、OCR 和 Qwen。
+│   # 配置 Vane Runner（默认 Ray）、PostgreSQL、MinIO、OCR 和 Qwen。
 │
 ├── scripts/
 │   └── run_demo.py

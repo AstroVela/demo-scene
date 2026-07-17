@@ -15,7 +15,9 @@
 | MinIO | `127.0.0.1:9000`，HTTP |
 | 模型服务 | 本机 NVIDIA GPU 上的 `Qwen2.5-VL-3B-Instruct` |
 
-TestPyPI 上的 Vane wheel 面向 CPython 3.12、Linux x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python 次版本或其他 CPU 架构。
+已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、
+x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python
+次版本或其他 CPU 架构。
 
 安装项目侧 Ubuntu 工具：
 
@@ -37,15 +39,15 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-### 2. 安装已验证的 Vane wheel
+### 2. 从公共 PyPI 安装 Vane
 
 ```bash
-python -m pip install -i https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0a1
+python -m pip install vane-ai
 ```
 
-两个 index 都要保留，让 Vane 来自 TestPyPI、普通依赖从 PyPI 解析。固定版本也要保留，因为 Launcher 会拒绝未经本 Demo 验证的 Runtime。
+不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的
+`pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝其他
+Runtime 标识。
 
 ### 3. 安装 Demo
 
@@ -214,35 +216,43 @@ Qwen 只返回文档类型、专家编号、供应商、推荐、参评、回避
 
 | 配置项 | 默认值 |
 | --- | --- |
-| Runner | `local` |
+| Runner | `ray` |
 | PostgreSQL 原始表 | `procurement_audit_raw.projects`、`suppliers`、`expert_scores`、`evidence_files` |
 | MinIO | `127.0.0.1:9000`，bucket `procurement-compliance-audit-fixtures` |
 | 输出目录 | `output` |
 | OCR | RapidOCR CPU，最低置信度 `0.60` |
 | AI | OpenAI provider，`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
 
-兼容的分布式入口可以将：
-
-```yaml
-runner: local
-```
-
-改为：
+仓库默认配置为：
 
 ```yaml
 runner: ray
 ```
 
-PostgreSQL/MinIO 来源合同保持不变，两种模式共用同一套 SQL 和 Relation Pipeline。Pipeline 将 `EvidenceOcrActor` 挂载为 `evidence_ocr_json(bucket, object_key)`；`int_evidence_ocr_udf.sql` 将它作为直接 Runner 投影对每张图片调用一次，`int_evidence_ocr.sql` 再解析物化 JSON。响应校验同样采用 `int_conflict_validation_udf.sql → int_conflict_facts.sql` 的分层。Driver 本地输入临时落为 Parquet，`Relation.write_parquet()` 将每个直接 UDF 或 AI Relation 交给当前 Runner，结果注册回 Driver 的 DuckDB catalog 供下一段纯 SQL 使用。必须使用 `vane-ai==0.1.0a1`，因为该版本修复了 Ray 路径对逐行 UDF passthrough 列的保留；分层的有状态/无状态 SQL UDF 形态已在两种 Runner 上通过冒烟测试。真实多节点目标集群仍需单独做基础设施 smoke test。
+SQL 与 Relation Pipeline 仍与 Runner 解耦，也接受 `runner: local`，但公共 Vane
+发布包的真实 RapidOCR/ONNX 路径是在 Ray 上完成验证的。OCR 引擎会在隔离的
+Actor worker 内延迟初始化，不会从 Driver 序列化原生 ONNX session。Launcher
+还会在操作者没有显式设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为
+原生 OCR worker 留出足够的清理时间。
 
-公共物化器采用 Runner-backed write API，而不是回退到 DuckDB 直接导出，因此 Local 和 Ray 共用同一个执行边界。
+PostgreSQL/MinIO 来源合同保持不变。Pipeline 将 `EvidenceOcrActor` 挂载为
+`evidence_ocr_json(bucket, object_key)`；`int_evidence_ocr_udf.sql` 将它作为直接
+Runner 投影对每张图片调用一次，`int_evidence_ocr.sql` 再解析物化 JSON。响应
+校验同样采用 `int_conflict_validation_udf.sql → int_conflict_facts.sql` 的分层。
+Driver 本地输入临时落为 Parquet，`Relation.write_parquet()` 将每个直接 UDF 或
+AI Relation 交给当前 Runner，结果注册回 Driver 的 DuckDB catalog 供下一段纯
+SQL 使用。真实多节点目标集群仍需单独做基础设施 smoke test。
+
+公共物化器采用 Runner-backed write API，而不是回退到 DuckDB 直接导出，因此
+切换 Runner 不会改变 Relation 边界。
 
 ## 排错
 
 | 现象 | 处理方式 |
 | --- | --- |
-| `No matching distribution found for vane-ai` | 确认 Ubuntu 24.04 x86_64 和 Python 3.12，并使用完整的 TestPyPI 与 extra-index 命令 |
-| Python/Vane/DuckDB 版本不匹配 | 重新激活 `.venv` 并安装固定 wheel；Launcher 会报告解释器、prefix 和 expected/actual |
+| `No matching distribution found for vane-ai` | 确认 Ubuntu 24.04 x86_64、Python 3.12、glibc 2.39 或更新，然后对公共 PyPI 执行 `python -m pip install vane-ai` |
+| Python/Vane/DuckDB 版本不匹配 | 重新激活 `.venv` 并从公共 PyPI 重装；Launcher 会报告解释器、prefix 和 expected/actual |
+| Ray 无法分配内存或满足 query demand | 停止遗留 Ray 进程、释放宿主机内存，或连接具备足够 CPU、heap 和 object store 的 Ray 集群；本次真实 OCR 验证使用 8 CPU 和 2 GiB object store |
 | 缺少直接依赖 | 执行 `python -m pip install -r requirements.txt` 和 `python -m pip check` |
 | PostgreSQL 连接、鉴权或表初始化失败 | 检查 DSN、database/role、端口，以及 schema/table 的读写权限 |
 | MinIO 连接、鉴权或对象读取失败 | 检查 endpoint、HTTP/TLS、access key，以及 bucket 的 list/read/write/delete 权限 |

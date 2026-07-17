@@ -42,10 +42,10 @@ ai:
 """
 
 
-def test_checked_in_config_selects_real_qwen_and_local_runner():
+def test_checked_in_config_selects_real_qwen_and_ray_runner():
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
 
-    assert config.runner == "local"
+    assert config.runner == "ray"
     assert config.output_dir == PROJECT_ROOT / "output"
     assert config.postgres.raw_relation_names == (
         "procurement_audit_raw.projects",

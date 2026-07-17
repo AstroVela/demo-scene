@@ -12,7 +12,7 @@ authors = [
   { name = "Vane Claims POC" },
 ]
 dependencies = [
-  "vane-ai[all]==0.1.0.dev20260714234347",
+  "vane-ai",
   "pillow==12.2.0",
   "pydantic==2.13.4",
   "openai==2.43.0",

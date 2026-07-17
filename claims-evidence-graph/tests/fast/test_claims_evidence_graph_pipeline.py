@@ -280,6 +280,7 @@ def test_cli_defaults_to_baseline_profile(monkeypatch) -> None:
 
     assert args.mode == "offline"
     assert args.profile == "baseline"
+    assert args.runner == "local"
 
 
 def test_quality_score_flags_low_quality_image() -> None:

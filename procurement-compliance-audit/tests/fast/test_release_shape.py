@@ -78,11 +78,11 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
         "project"
     ]
 
+    obsolete_index = ".".join(("test", "pypi", "org"))
     for name, runbook in runbooks.items():
         for required in (
             "python3.12 -m venv .venv",
-            "https://test.pypi.org/simple/",
-            "--extra-index-url https://pypi.org/simple/",
+            "python -m pip install vane-ai",
             "vane-ai==0.1.0a1",
             "python -m pip install -r requirements.txt",
             "Qwen2.5-VL-3B-Instruct",
@@ -90,6 +90,7 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
             "runner: ray",
         ):
             assert required in runbook, f"{name} is missing {required!r}"
+        assert obsolete_index not in runbook.lower()
 
     assert "python scripts/run_demo.py" in readme
     assert "docs/runbook.md" in readme
