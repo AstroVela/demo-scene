@@ -10,7 +10,7 @@
 | --- | --- |
 | 操作系统 | Ubuntu 24.04 x86_64，glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0.dev20260714234347` |
+| Vane | `vane-ai==0.1.0a1` |
 | PostgreSQL | `127.0.0.1:5432`，database `vane_insight` |
 | MinIO | `127.0.0.1:9000`，HTTP |
 | 模型服务 | 本机 NVIDIA GPU 上的 `Qwen2.5-VL-3B-Instruct` |
@@ -42,7 +42,7 @@ python -m pip install --upgrade pip
 ```bash
 python -m pip install -i https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0.dev20260714234347
+  vane-ai==0.1.0a1
 ```
 
 两个 index 都要保留，让 Vane 来自 TestPyPI、普通依赖从 PyPI 解析。固定版本也要保留，因为 Launcher 会拒绝未经本 Demo 验证的 Runtime。
@@ -58,7 +58,7 @@ python -m pip check
 
 | 依赖 | 用途 |
 | --- | --- |
-| `vane-ai==0.1.0.dev20260714234347` | Vane API、custom DuckDB 和 worker |
+| `vane-ai==0.1.0a1` | Vane API、custom DuckDB 和 worker |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `psycopg` | 读取并初始化 PostgreSQL 原始表 |
 | `minio` | 读取并初始化 MinIO 原始材料对象 |
@@ -171,14 +171,14 @@ python -m pytest tests/fast -q
 | --- | --- | --- | --- |
 | `stg_scores` | view | expert × supplier | 类型、分值和 supplier 合同 |
 | `stg_evidence_images` | view | evidence image | 可信 locator 和 role |
-| `int_evidence_ocr` | table | evidence image | OCR 文本、置信度和行数 |
+| `int_evidence_ocr` | table | evidence image | 由 SQL 调用有状态 OCR 表达式得到的类型化输出 |
 | `int_evidence_ai` | table | evidence image | Qwen 原始 JSON 响应 |
 | `int_conflict_facts` | view | evidence image | 校验后的推荐、参评和回避事实 |
 | `int_score_metrics` | view | project × conflict signal | Peer average、score delta 和两次排名 |
 | `audit_findings` | table | finding | 三条确定性规则 |
 | `audit_summary` | table | project | 项目级审计状态 |
 
-`int_evidence_ai` 是唯一由 Python 物化的中间 Relation。每张图片请求直接绑定 `project_id/file_id`，不依赖 Actor 执行顺序。返回的 `document_type` 必须与 Fixture 中可信的 role 一致；不一致时会使用同一张图片强化合同后重试一次，SQL 还会再次应用 role 绑定。
+`int_evidence_ai` 是唯一由 Python 业务逻辑组装的核心中间 Relation；临时 `*_udf` Relation 均由 SQL 定义并通过当前 Runner 物化。每张图片请求直接绑定 `project_id/file_id`，不依赖 Actor 执行顺序。返回的 `document_type` 必须与 Fixture 中可信的 role 一致；不一致时会使用同一张图片强化合同后重试一次，SQL 还会再次应用 role 绑定。
 
 使用 `queries.sql` 在同一个 Connection 中检查八个 Relation：
 
@@ -233,9 +233,9 @@ runner: local
 runner: ray
 ```
 
-PostgreSQL/MinIO 来源合同和业务 SQL 保持不变。两种模式都已在单机 Fixture 上完成端到端验证，并共用同一条基于 Runner 的 Relation 执行路径。Driver 本地 Arrow 输入会临时落为 Parquet，`Relation.write_parquet()` 再通过当前启用的 Vane Runner（`LocalRunner.run_write` 或 `RayRunner.run_write`）执行 OCR、AI 和校验计划；批处理函数的 subprocess 或 Ray 执行后端由 Vane 自动选择。物化后的 Arrow 结果会注册回 Driver 的 DuckDB catalog，继续完成确定性的 join 和聚合。真实多节点目标集群仍需单独做基础设施 smoke test。
+PostgreSQL/MinIO 来源合同保持不变，两种模式共用同一套 SQL 和 Relation Pipeline。Pipeline 将 `EvidenceOcrActor` 挂载为 `evidence_ocr_json(bucket, object_key)`；`int_evidence_ocr_udf.sql` 将它作为直接 Runner 投影对每张图片调用一次，`int_evidence_ocr.sql` 再解析物化 JSON。响应校验同样采用 `int_conflict_validation_udf.sql → int_conflict_facts.sql` 的分层。Driver 本地输入临时落为 Parquet，`Relation.write_parquet()` 将每个直接 UDF 或 AI Relation 交给当前 Runner，结果注册回 Driver 的 DuckDB catalog 供下一段纯 SQL 使用。必须使用 `vane-ai==0.1.0a1`，因为该版本修复了 Ray 路径对逐行 UDF passthrough 列的保留；分层的有状态/无状态 SQL UDF 形态已在两种 Runner 上通过冒烟测试。真实多节点目标集群仍需单独做基础设施 smoke test。
 
-当前锁定的 Vane 版本尚未实现 `LocalRunner.run_iter_tables`，因此公共物化器有意采用 Runner-backed write API，而不是回退到 DuckDB 直接导出。代码中的窄兼容适配只用于统一该版本 Local Runner 的进度回调签名，不会绕过 Runner。
+公共物化器采用 Runner-backed write API，而不是回退到 DuckDB 直接导出，因此 Local 和 Ray 共用同一个执行边界。
 
 ## 排错
 
@@ -253,11 +253,11 @@ PostgreSQL/MinIO 来源合同和业务 SQL 保持不变。两种模式都已在�
 
 | 组件 | 必需标识 |
 | --- | --- |
-| Vane distribution metadata（`vane-ai`） | `0.1.0.dev20260714234347` |
-| `vane.__version__` | `0.1.0.dev20260714234347` |
-| DuckDB Python package | `0.1.0.dev20260714234347` |
-| DuckDB engine | `v1.6.0-dev121` |
-| DuckDB source revision | `ca6948529b` |
+| Vane distribution metadata（`vane-ai`） | `0.1.0a1` |
+| `vane.__version__` | `0.1.0a1` |
+| DuckDB Python package | `0.1.0a1` |
+| DuckDB engine | `v1.6.0-dev1` |
+| DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
 任一标识或必需 Vane API 不匹配都会启动失败，不会静默回退到普通 DuckDB。升级 Runtime 时必须同步更新 Launcher 和真实端到端验收。

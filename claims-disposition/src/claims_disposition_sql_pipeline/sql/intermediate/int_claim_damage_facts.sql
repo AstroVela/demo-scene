@@ -1,61 +1,6 @@
 create or replace view int_claim_damage_facts as
--- Define the AI-response contract shared by Local and Ray execution.
--- The orchestrator validates per-photo responses through Vane before aggregation.
-with material_facts as (
-  select * from int_claim_material_facts
-),
-
-photo_values as (
-  -- Expand the ordered, verified photo inputs prepared by material processing.
-  select
-    material_facts.claim_id,
-    unnest(json_extract(material_facts.usable_photo_inputs_json, '$[*]')) as photo_json
-  from material_facts
-  where material_facts.model_input_usable
-),
-
-model_inputs as (
-  select
-    claim_id,
-    try_cast(json_extract(photo_json, '$.file_order') as integer) as file_order,
-    json_extract_string(photo_json, '$.file_id') as file_id,
-    json_extract_string(photo_json, '$.sha256') as photo_sha256,
-    cast(json_extract(photo_json, '$.photo_quality') as varchar)
-      as photo_quality_json
-  from photo_values
-),
-
-ai_responses as (
-  select * from int_claim_photo_ai
-),
-
-model_responses as (
-  -- Bind each model response to its claim, file identity, and content hash.
-  select
-    model_inputs.*,
-    ai_responses.raw_damage_response
-  from model_inputs
-  left join ai_responses
-    on model_inputs.claim_id = ai_responses.claim_id
-    and model_inputs.file_id = ai_responses.file_id
-    and model_inputs.photo_sha256 = ai_responses.photo_sha256
-),
-
-parsed_responses as (
-  -- Normalize untrusted model output into the strict damage-result schema.
-  select
-    *,
-    photo_damage_result_json(
-      coalesce(raw_damage_response, ''),
-      claim_id,
-      file_id,
-      photo_sha256
-    ) as damage_result_json
-  from model_responses
-),
-
-per_photo_damage_facts as (
-  -- Extract typed evidence fields used by deterministic decision rules.
+-- Parse Runner-validated model JSON, classify each photo, and aggregate by claim.
+with per_photo_damage_facts as (
   select
     claim_id,
     file_id,
@@ -64,8 +9,9 @@ per_photo_damage_facts as (
     json_extract_string(damage_result_json, '$.status') as model_status,
     try_cast(json_extract_string(damage_result_json, '$.vehicle_visible') as boolean)
       as vehicle_visible,
-    try_cast(json_extract_string(damage_result_json, '$.target_vehicle_clear') as boolean)
-      as target_vehicle_clear,
+    try_cast(
+      json_extract_string(damage_result_json, '$.target_vehicle_clear') as boolean
+    ) as target_vehicle_clear,
     try_cast(json_extract_string(damage_result_json, '$.damage_visible') as boolean)
       as damage_visible,
     cast(json_extract(damage_result_json, '$.damaged_parts') as varchar)
@@ -75,21 +21,44 @@ per_photo_damage_facts as (
     json_extract_string(damage_result_json, '$.severity_hint') as severity_hint,
     cast(json_extract(damage_result_json, '$.uncertainty_reasons') as varchar)
       as uncertainty_reasons_json,
-    try_cast(json_extract_string(damage_result_json, '$.finding_determinate') as boolean)
-      as finding_determinate,
+    try_cast(
+      json_extract_string(damage_result_json, '$.finding_determinate') as boolean
+    ) as finding_determinate,
     try_cast(json_extract_string(damage_result_json, '$.confidence') as double)
       as damage_confidence,
-    json_list_has_meaningful_damage(
-      cast(json_extract(damage_result_json, '$.damaged_parts') as varchar)
+    coalesce(
+      list_count(
+        list_filter(
+          try_cast(
+            json_extract(damage_result_json, '$.damaged_parts') as varchar[]
+          ),
+          item -> lower(trim(item)) not in (
+            '', 'unknown', 'none', 'none_visible', 'no_damage'
+          )
+        )
+      ) > 0,
+      false
     ) as meaningful_damaged_parts,
-    json_list_has_meaningful_damage(
-      cast(json_extract(damage_result_json, '$.damage_types') as varchar)
+    coalesce(
+      list_count(
+        list_filter(
+          try_cast(
+            json_extract(damage_result_json, '$.damage_types') as varchar[]
+          ),
+          item -> lower(trim(item)) not in (
+            '', 'unknown', 'none', 'none_visible', 'no_damage'
+          )
+        )
+      ) > 0,
+      false
     ) as meaningful_damage_types,
     coalesce(
-      try_cast(json_array_length(damage_result_json, '$.uncertainty_reasons') as integer),
+      try_cast(
+        json_array_length(damage_result_json, '$.uncertainty_reasons') as integer
+      ),
       0
     ) as uncertainty_reason_count
-  from parsed_responses
+  from int_claim_damage_validation_udf
 ),
 
 classified_photo_inputs as (
@@ -272,5 +241,5 @@ select
   coalesce(aggregated_damage_facts.any_high_severity_risk, false)
     as any_high_severity_risk,
   aggregated_damage_facts.claim_id is not null as model_was_run
-from material_facts
-left join aggregated_damage_facts using (claim_id)
+from int_claim_material_facts as material_facts
+left join aggregated_damage_facts using (claim_id);

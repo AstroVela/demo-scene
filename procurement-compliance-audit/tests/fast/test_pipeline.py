@@ -128,15 +128,13 @@ def test_source_loader_reads_postgres_snapshot(monkeypatch):
     assert events == ["procurement_audit_raw", "postgres:enter", "postgres:exit"]
 
 
-def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
-    tmp_path,
-    monkeypatch,
-):
+def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
     config = replace(
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
         output_dir=tmp_path / "output",
     )
     events = []
+    ocr_calls = []
     source, _store = _source_and_store()
 
     def configure_runner(*, runner):
@@ -144,9 +142,10 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
 
     def attach_functions(connection, _config):
         events.append("attach_functions")
-        connection.create_function(
-            "evidence_ocr_json",
-            lambda _bucket, _object_key: stable_json(
+
+        def evidence_ocr(_bucket, object_key):
+            ocr_calls.append(object_key)
+            return stable_json(
                 {
                     "status": "success",
                     "full_text": "fixture OCR text",
@@ -154,7 +153,11 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
                     "text_line_count": 1,
                     "error": None,
                 }
-            ),
+            )
+
+        connection.create_function(
+            "evidence_ocr_json",
+            evidence_ocr,
             ["VARCHAR", "VARCHAR"],
             "VARCHAR",
         )
@@ -177,23 +180,6 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
         assert {row["file_id"] for row in ocr_rows} == {"EVD-REC-001", "EVD-MIN-001"}
         return _fixed_ai_table()
 
-    monkeypatch.setattr(
-        pipeline,
-        "_create_evidence_ocr_table",
-        lambda connection, _config, **_kwargs: pipeline._execute_sql_file(
-            connection,
-            pipeline.PRE_AI_STAGES[2][1],
-        ),
-    )
-    monkeypatch.setattr(
-        pipeline,
-        "_create_runner_conflict_facts",
-        lambda connection, path, **_kwargs: pipeline._execute_sql_file(
-            connection,
-            path,
-        ),
-    )
-
     result = run_pipeline(
         config,
         configure_runner=configure_runner,
@@ -201,9 +187,12 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
         runtime_function_attacher=attach_functions,
         ai_relation_builder=build_ai,
         source_loader=lambda _config: source,
+        relation_materializer=lambda relation: relation.to_arrow_table(),
     )
 
     assert events == ["configure:local", "attach_functions", "ai:2"]
+    assert len(ocr_calls) == 2
+    assert all(object_key.endswith(".png") for object_key in ocr_calls)
     assert result.executed_relations == CORE_RELATIONS
     assert result.finding_count == 3
     assert result.summary_count == 1
@@ -220,7 +209,6 @@ def test_pipeline_runs_eight_relations_on_one_connection_and_publishes(
 
 def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
     tmp_path,
-    monkeypatch,
 ):
     config = replace(
         load_runtime_config(PROJECT_ROOT / "runtime.yml"),
@@ -279,15 +267,6 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
             **kwargs,
         )
 
-    monkeypatch.setattr(
-        pipeline,
-        "_create_evidence_ocr_table",
-        lambda connection, _config, **_kwargs: pipeline._execute_sql_file(
-            connection,
-            pipeline.PRE_AI_STAGES[2][1],
-        ),
-    )
-
     with pytest.raises(EvidenceAiInputError, match="EVD-MIN-001"):
         run_pipeline(
             config,
@@ -296,6 +275,7 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
             runtime_function_attacher=attach_functions,
             ai_relation_builder=build_ai,
             source_loader=lambda _config: source,
+            relation_materializer=lambda relation: relation.to_arrow_table(),
         )
 
     assert not config.output_dir.exists()

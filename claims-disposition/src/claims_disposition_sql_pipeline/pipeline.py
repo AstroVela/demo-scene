@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import inspect
 from pathlib import Path
 import re
 import sys
 from tempfile import TemporaryDirectory
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import duckdb
 import pyarrow as pa
@@ -22,11 +21,7 @@ from .output_writer import replace_output_rows
 from .pg import connect_postgres, probe_postgres, read_claim_rows
 from .photo_ai import build_photo_ai_relation
 from .vane_udfs import (
-    CLAIM_MATERIAL_BATCH_SCHEMA,
-    DAMAGE_VALIDATION_BATCH_SCHEMA,
     DocumentOcrActor,
-    build_claim_material_batch_actor,
-    build_damage_validation_batch,
     build_minio_udfs,
     stable_json,
     stateless_udf_specs,
@@ -38,10 +33,26 @@ SQL_STAGES = (
     SQL_ROOT / "staging/stg_claims.sql",
     SQL_ROOT / "staging/stg_claim_materials.sql",
     SQL_ROOT / "staging/stg_run_config.sql",
-    SQL_ROOT / "intermediate/int_claim_material_facts.sql",
 )
+MATERIAL_INPUT_STAGE = SQL_ROOT / "intermediate/int_claim_material_inputs.sql"
+OBJECT_PROBE_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_object_probe_udf.sql"
+OBJECT_FACT_STAGE = SQL_ROOT / "intermediate/int_claim_object_facts.sql"
+OBJECT_HASH_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_object_hash_udf.sql"
+PHOTO_QUALITY_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_photo_quality_udf.sql"
+DOCUMENT_OCR_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_document_ocr_udf.sql"
+OBJECT_FACT_UDF_STAGES = (
+    OBJECT_HASH_UDF_STAGE,
+    PHOTO_QUALITY_UDF_STAGE,
+    DOCUMENT_OCR_UDF_STAGE,
+)
+DOCUMENT_FIELDS_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_document_fields_udf.sql"
+DOCUMENT_QUALITY_INPUT_STAGE = SQL_ROOT / "intermediate/int_claim_document_quality_inputs.sql"
+DOCUMENT_QUALITY_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_document_quality_udf.sql"
+MATERIAL_FACT_STAGE = SQL_ROOT / "intermediate/int_claim_material_facts.sql"
+DAMAGE_VALIDATION_INPUT_STAGE = SQL_ROOT / "intermediate/int_claim_damage_validation_inputs.sql"
+DAMAGE_VALIDATION_UDF_STAGE = SQL_ROOT / "intermediate/int_claim_damage_validation_udf.sql"
+DAMAGE_FACT_STAGE = SQL_ROOT / "intermediate/int_claim_damage_facts.sql"
 SQL_FINAL_STAGES = (
-    SQL_ROOT / "intermediate/int_claim_damage_facts.sql",
     SQL_ROOT / "intermediate/int_claim_decision_facts.sql",
     SQL_ROOT / "marts/claim_disposition.sql",
 )
@@ -58,14 +69,14 @@ class RuntimeConnectionError(ConnectionError):
 
 
 class RunnerWorkspace:
-    """Stage driver-local Arrow data as scans visible to every Vane Runner."""
+    """Stage driver-local Arrow data as Parquet scans for the active Runner."""
 
     def __init__(self, root: Path) -> None:
         self.root = root
         self.counter = 0
 
     def stage_table(self, name: str, table: pa.Table) -> Path:
-        """Persist Arrow input as a Parquet scan for either Runner backend."""
+        """Persist Arrow input as a Parquet scan for the configured Runner."""
 
         self.counter += 1
         path = self.root / f"{self.counter:03d}-{_safe_identifier(name)}.parquet"
@@ -164,31 +175,9 @@ def register_or_replace_table(
         connection.unregister(temporary)
 
 
-def _ensure_runner_write_compatibility() -> None:
-    """Bridge the pinned wheel's LocalRunner/progress signature mismatch."""
-
-    from duckdb.runners.progress import ProgressRenderer
-
-    original_update = ProgressRenderer.update
-    if "allow_terminal" in inspect.signature(original_update).parameters:
-        return
-
-    def compatible_update(
-        self: Any,
-        *,
-        force: bool = False,
-        allow_terminal: bool = False,
-    ) -> None:
-        del allow_terminal
-        original_update(self, force=force)
-
-    ProgressRenderer.update = compatible_update
-
-
 def materialize_relation(relation: Any) -> pa.Table:
     """Materialize a Relation through the active Vane Runner write API."""
 
-    _ensure_runner_write_compatibility()
     with TemporaryDirectory(prefix="claims-runner-result-") as root:
         path = Path(root) / "result.parquet"
         relation.write_parquet(str(path))
@@ -231,138 +220,40 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
     )
 
 
-def _claim_material_aggregation_query(path: Path) -> str:
+def _sql_stage_parts(path: Path) -> tuple[str, str]:
     statement = path.read_text(encoding="utf-8")
     match = _CREATE_RELATION_AS.fullmatch(
         statement.strip().removesuffix(";").strip()
     )
     if match is None:
-        raise RuntimeError(f"invalid claim material SQL stage: {path}")
-    query = match.group("query")
-    marker = "aggregated as ("
-    marker_index = query.find(marker)
-    if marker_index < 0:
-        raise RuntimeError("claim material SQL stage is missing aggregated CTE")
-    return (
-        "with claims as (select * from stg_claims), "
-        "run_config as (select * from stg_run_config), "
-        "row_facts as (select * from __runner_claim_material_row_facts), "
-        + query[marker_index:]
-    )
+        raise RuntimeError(f"invalid SQL stage: {path}")
+    return match.group("target"), match.group("query")
 
 
-def _create_runner_claim_material_facts(
+def _execute_runner_sql_file(
     connection: Any,
-    config: RuntimeConfig,
+    runner_connection: Any,
     path: Path,
     *,
     workspace: RunnerWorkspace,
+    source_relations: Sequence[str],
+    materializer: Callable[[Any], pa.Table],
 ) -> None:
-    """Run MinIO checks, photo quality, and document OCR through Vane."""
+    """Run one SQL model through the active Vane Runner and register its result."""
 
-    source = workspace.relation_from_table(
-        connection,
-        "claim_material_input",
-        connection.sql("select * from stg_claim_materials").to_arrow_table(),
-    )
-    relation = source.map_batches(
-        build_claim_material_batch_actor(
-            config.minio,
-            required_fields=config.ocr.required_fields,
-            minimum_text_confidence=config.ocr.minimum_text_confidence,
-        ),
-        schema=CLAIM_MATERIAL_BATCH_SCHEMA,
-        actor_number=1,
-        gpus=0,
-    )
+    for source_name in source_relations:
+        name = _safe_identifier(source_name)
+        table = connection.sql(f"select * from {name}").to_arrow_table()
+        workspace.relation_from_table(
+            runner_connection,
+            name,
+            table,
+        ).create_view(name, replace=True)
+    target, query = _sql_stage_parts(path)
     register_or_replace_table(
         connection,
-        "__runner_claim_material_row_facts",
-        materialize_relation(relation),
-    )
-    connection.execute(
-        "create or replace table int_claim_material_facts as "
-        + _claim_material_aggregation_query(path)
-    )
-
-
-def _damage_aggregation_query(path: Path) -> str:
-    statement = path.read_text(encoding="utf-8")
-    match = _CREATE_RELATION_AS.fullmatch(
-        statement.strip().removesuffix(";").strip()
-    )
-    if match is None:
-        raise RuntimeError(f"invalid claim damage SQL stage: {path}")
-    query = match.group("query")
-    marker = "aggregated_damage_facts as ("
-    marker_index = query.find(marker)
-    if marker_index < 0:
-        raise RuntimeError("claim damage SQL stage is missing aggregate CTE")
-    return (
-        "with material_facts as (select * from int_claim_material_facts), "
-        "classified_photo_results as "
-        "(select * from __runner_classified_photo_results), "
-        + query[marker_index:]
-    )
-
-
-def _create_runner_claim_damage_facts(
-    connection: Any,
-    path: Path,
-    *,
-    workspace: RunnerWorkspace,
-) -> None:
-    """Validate AI damage responses through Vane before SQL aggregation."""
-
-    model_responses = connection.sql(
-        """
-        with photo_values as (
-          select
-            material_facts.claim_id,
-            unnest(json_extract(material_facts.usable_photo_inputs_json, '$[*]'))
-              as photo_json
-          from int_claim_material_facts as material_facts
-          where material_facts.model_input_usable
-        ),
-        model_inputs as (
-          select
-            claim_id,
-            try_cast(json_extract(photo_json, '$.file_order') as integer)
-              as file_order,
-            json_extract_string(photo_json, '$.file_id') as file_id,
-            json_extract_string(photo_json, '$.sha256') as photo_sha256,
-            cast(json_extract(photo_json, '$.photo_quality') as varchar)
-              as photo_quality_json
-          from photo_values
-        )
-        select
-          model_inputs.*,
-          ai.raw_damage_response
-        from model_inputs
-        left join int_claim_photo_ai as ai
-          on model_inputs.claim_id = ai.claim_id
-         and model_inputs.file_id = ai.file_id
-         and model_inputs.photo_sha256 = ai.photo_sha256
-        """
-    ).to_arrow_table()
-    source = workspace.relation_from_table(
-        connection,
-        "damage_validation_input",
-        model_responses,
-    )
-    relation = source.map_batches(
-        build_damage_validation_batch(),
-        schema=DAMAGE_VALIDATION_BATCH_SCHEMA,
-        gpus=0,
-    )
-    register_or_replace_table(
-        connection,
-        "__runner_classified_photo_results",
-        materialize_relation(relation),
-    )
-    connection.execute(
-        "create or replace table int_claim_damage_facts as "
-        + _damage_aggregation_query(path)
+        target,
+        materializer(runner_connection.sql(query)),
     )
 
 
@@ -431,6 +322,7 @@ def run_pipeline(
     ) as workspace_root:
         workspace = RunnerWorkspace(Path(workspace_root))
         connection = duckdb.connect()
+        runner_connection = duckdb.connect()
         try:
             # Register the PostgreSQL snapshot and secret-free run settings.
             register_or_replace_table(
@@ -443,38 +335,74 @@ def run_pipeline(
                 "claims_runtime_run_config",
                 rows_to_arrow([build_run_config_row(config, run_started_at)]),
             )
-            attach_runtime_functions(connection, config)
-            # Stage claims and enrich each material through the active Runner.
+            attach_runtime_functions(runner_connection, config)
+            # Build the driver-local staging relations first.
             for sql_path in SQL_STAGES:
-                if sql_path.stem == "int_claim_material_facts":
-                    _create_runner_claim_material_facts(
-                        connection,
-                        config,
-                        sql_path,
-                        workspace=workspace,
-                    )
-                    continue
                 _execute_sql_file(connection, sql_path)
+            # Make every object-store/OCR call a direct Runner SQL projection.
+            _execute_sql_file(connection, MATERIAL_INPUT_STAGE)
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                OBJECT_PROBE_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_claim_material_inputs",),
+                materializer=materialize_relation,
+            )
+            _execute_sql_file(connection, OBJECT_FACT_STAGE)
+            for sql_path in OBJECT_FACT_UDF_STAGES:
+                _execute_runner_sql_file(
+                    connection,
+                    runner_connection,
+                    sql_path,
+                    workspace=workspace,
+                    source_relations=("int_claim_object_facts",),
+                    materializer=materialize_relation,
+                )
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                DOCUMENT_FIELDS_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_claim_document_ocr_udf",),
+                materializer=materialize_relation,
+            )
+            _execute_sql_file(connection, DOCUMENT_QUALITY_INPUT_STAGE)
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                DOCUMENT_QUALITY_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_claim_document_quality_inputs",),
+                materializer=materialize_relation,
+            )
+            # Aggregate the Runner outputs into the AI-ready claim contract.
+            _execute_sql_file(connection, MATERIAL_FACT_STAGE)
             # Bind verified MinIO photos to one multimodal request per image.
             _create_photo_ai_table(
                 connection,
                 config,
                 workspace=workspace,
             )
-            # Validate AI facts, apply deterministic rules, and build the mart.
+            # Bind AI output in SQL, validate it through one direct Runner UDF,
+            # then keep classification, rules, and marts in pure SQL stages.
+            _execute_sql_file(connection, DAMAGE_VALIDATION_INPUT_STAGE)
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                DAMAGE_VALIDATION_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_claim_damage_validation_inputs",),
+                materializer=materialize_relation,
+            )
+            _execute_sql_file(connection, DAMAGE_FACT_STAGE)
             for sql_path in SQL_FINAL_STAGES:
-                if sql_path.stem == "int_claim_damage_facts":
-                    _create_runner_claim_damage_facts(
-                        connection,
-                        sql_path,
-                        workspace=workspace,
-                    )
-                    continue
                 _execute_sql_file(connection, sql_path)
             rows = connection.sql(
                 "select * from claim_disposition order by claim_id"
             ).to_arrow_table().to_pylist()
         finally:
+            runner_connection.close()
             connection.close()
 
     # Validate the output contract before replacing the PostgreSQL result table.

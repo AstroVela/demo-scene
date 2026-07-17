@@ -10,7 +10,7 @@
 | --- | --- |
 | 操作系统 | Ubuntu 24.04 x86_64，glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0.dev20260714234347` |
+| Vane | `vane-ai==0.1.0a1` |
 | PostgreSQL | `127.0.0.1:5432` |
 | MinIO | `127.0.0.1:9000` |
 | 模型服务 | NVIDIA CUDA GPU 上的 Qwen2.5-VL-3B，监听 `127.0.0.1:8001` |
@@ -46,7 +46,7 @@ python -m pip install --upgrade pip
 ```bash
 python -m pip install -i https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0.dev20260714234347
+  vane-ai==0.1.0a1
 ```
 
 两个 index 都要保留：Vane 来自 TestPyPI，普通依赖从 PyPI 解析。固定版本也要保留，因为 Launcher 会拒绝未经本 Demo 验证的 Vane 和 custom DuckDB build。
@@ -62,7 +62,7 @@ python -m pip check
 
 | 依赖 | 用途 |
 | --- | --- |
-| `vane-ai==0.1.0.dev20260714234347` | Vane API、custom DuckDB 和 worker |
+| `vane-ai==0.1.0a1` | Vane API、custom DuckDB 和 worker |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `minio` | 对象读写和 SHA-256 UDF |
 | `psycopg[binary]` | PostgreSQL 输入、Fixture 和原子发布 |
@@ -167,9 +167,9 @@ python -m pytest tests/fast -q
 | OCR | RapidOCR CPU；必需字段 `claim_number`、`claimant_name`、`loss_date`；最低平均置信度 `0.70` |
 | AI | OpenAI provider；`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
 
-在 `runtime.yml` 中设置 `runner: local` 或 `runner: ray`。两种模式都已在单机 Fixture 上完成端到端验证，并共用同一条基于 Runner 的 Relation 执行路径。Driver 本地 Arrow 输入会临时落为 Parquet，`Relation.write_parquet()` 再通过当前启用的 Vane Runner（`LocalRunner.run_write` 或 `RayRunner.run_write`）执行 OCR、AI 和校验计划；批处理函数的 subprocess 或 Ray 执行后端由 Vane 自动选择。物化后的 Arrow 结果会注册回 Driver 的 DuckDB catalog，继续完成确定性的 join 和聚合；运行结束后会删除临时 staging 文件。
+在 `runtime.yml` 中设置 `runner: local` 或 `runner: ray`，两种模式共用同一套 SQL 和 Relation Pipeline。Pipeline 将 `DocumentOcrActor` 挂载为有状态表达式 `document_ocr_json(bucket, object_key)`，`int_claim_document_ocr_udf.sql` 对每份合格证明文档调用一次。每个 `*_udf.sql` 文件都是直接 UDF 投影，由 `Relation.write_parquet()` 交给当前启用的 Vane Runner（`LocalRunner.run_write` 或 `RayRunner.run_write`）执行；紧随其后的纯 SQL 文件再解析、关联、分类或聚合物化结果。Driver 本地输入会临时落为 Parquet，结果注册回 Driver 的 DuckDB catalog，运行结束后删除 staging 目录。必须使用 `vane-ai==0.1.0a1`，因为该版本修复了 Ray 路径对逐行 UDF passthrough 列的保留；“有状态 Actor → 下游 SQL → 无状态校验 UDF → 下游 SQL”的分层形态已在两种 Runner 上通过冒烟测试。
 
-当前锁定的 Vane 版本尚未实现 `LocalRunner.run_iter_tables`，因此公共物化器有意采用 Runner-backed write API，而不是回退到 DuckDB 直接导出。代码中的窄兼容适配只用于统一该版本 Local Runner 的进度回调签名，不会绕过 Runner。
+公共物化器采用 Runner-backed write API，而不是回退到 DuckDB 直接导出，因此 Local 和 Ray 共用同一个执行边界。
 
 加载器会校验 YAML 结构、SQL identifier、loopback URL、必需值和数值范围。诊断不会打印完整 PostgreSQL DSN、MinIO secret 或 AI key。当 AI URL 是 loopback 地址时，Launcher 会清理 HTTP proxy 变量并补充 `NO_PROXY`/`no_proxy`。
 
@@ -230,11 +230,11 @@ Writer 会在打开发布事务前校验九列、类型、枚举、置信度和�
 
 | 组件 | 必需标识 |
 | --- | --- |
-| Vane distribution metadata（`vane-ai`） | `0.1.0.dev20260714234347` |
-| `vane.__version__` | `0.1.0.dev20260714234347` |
-| DuckDB Python package | `0.1.0.dev20260714234347` |
-| DuckDB engine | `v1.6.0-dev121` |
-| DuckDB source revision | `ca6948529b` |
+| Vane distribution metadata（`vane-ai`） | `0.1.0a1` |
+| `vane.__version__` | `0.1.0a1` |
+| DuckDB Python package | `0.1.0a1` |
+| DuckDB engine | `v1.6.0-dev1` |
+| DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
 Launcher 同时要求 `vane.func`、`vane.cls`、`vane.attach_function`、`vane.configure`、`vane.ai.prompt` 和 `duckdb.ray_cxx`。任一不匹配都会明确失败，不会静默回退到普通 DuckDB。

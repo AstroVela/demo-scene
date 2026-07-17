@@ -9,7 +9,6 @@ import re
 from typing import Any, Mapping
 
 from PIL import Image, UnidentifiedImageError
-import pyarrow as pa
 import vane
 
 from .config import MinioConfig
@@ -336,81 +335,3 @@ class EvidenceOcrActor:
             return normalize_ocr_observations(self.engine(value))
         except Exception as exc:
             return _unreadable_ocr(f"ocr_engine_failed:{type(exc).__name__}")
-
-
-EVIDENCE_OCR_BATCH_SCHEMA = {
-    "project_id": "VARCHAR",
-    "file_id": "VARCHAR",
-    "role": "VARCHAR",
-    "bucket": "VARCHAR",
-    "object_key": "VARCHAR",
-    "media_type": "VARCHAR",
-    "ocr_json": "VARCHAR",
-    "ocr_status": "VARCHAR",
-    "ocr_text": "VARCHAR",
-    "ocr_confidence": "DOUBLE",
-    "ocr_text_line_count": "INTEGER",
-}
-_EVIDENCE_OCR_ARROW_SCHEMA = pa.schema(
-    [
-        ("project_id", pa.string()),
-        ("file_id", pa.string()),
-        ("role", pa.string()),
-        ("bucket", pa.string()),
-        ("object_key", pa.string()),
-        ("media_type", pa.string()),
-        ("ocr_json", pa.string()),
-        ("ocr_status", pa.string()),
-        ("ocr_text", pa.string()),
-        ("ocr_confidence", pa.float64()),
-        ("ocr_text_line_count", pa.int32()),
-    ]
-)
-
-
-def build_evidence_ocr_batch_actor(minio_config: MinioConfig) -> type:
-    """Build a zero-argument batch actor for Vane's active Runner backend."""
-
-    row_actor_class = EvidenceOcrActor.user_class
-
-    class EvidenceOcrBatchActor:
-        def __init__(self) -> None:
-            self.actor = row_actor_class(minio_config)
-
-        def __call__(self, batch: Any) -> pa.RecordBatch:
-            rows = []
-            # Preserve trusted source metadata while OCR enriches each image.
-            columns = {
-                name: batch.column(name).to_pylist()
-                for name in (
-                    "project_id",
-                    "file_id",
-                    "role",
-                    "bucket",
-                    "object_key",
-                    "media_type",
-                )
-            }
-            for index in range(batch.num_rows):
-                # The actor reads MinIO and returns normalized OCR JSON per file.
-                ocr_json = self.actor(
-                    columns["bucket"][index],
-                    columns["object_key"][index],
-                )
-                payload = json.loads(ocr_json)
-                rows.append(
-                    {
-                        **{name: values[index] for name, values in columns.items()},
-                        "ocr_json": ocr_json,
-                        "ocr_status": payload.get("status"),
-                        "ocr_text": payload.get("full_text"),
-                        "ocr_confidence": payload.get("mean_confidence"),
-                        "ocr_text_line_count": payload.get("text_line_count"),
-                    }
-                )
-            return pa.RecordBatch.from_pylist(
-                rows,
-                schema=_EVIDENCE_OCR_ARROW_SCHEMA,
-            )
-
-    return EvidenceOcrBatchActor

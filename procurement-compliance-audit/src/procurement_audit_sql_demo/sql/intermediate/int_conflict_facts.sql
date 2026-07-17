@@ -1,17 +1,5 @@
 create or replace view int_conflict_facts as
--- Normalize untrusted AI JSON and bind it back to trusted evidence metadata.
--- The orchestrator materializes validation through Vane before this role filter.
-with validated as materialized (
-  select
-    evidence.project_id,
-    evidence.file_id,
-    evidence.role,
-    validate_audit_fact_json(ai.raw_response) as fact_json
-  from int_evidence_ai as ai
-  inner join stg_evidence_images as evidence
-    on evidence.project_id = ai.project_id
-   and evidence.file_id = ai.file_id
-)
+-- Parse Runner-validated JSON and enforce its trusted evidence-role binding.
 select
   -- Expose typed compliance facts only when role and document type agree.
   project_id,
@@ -26,7 +14,7 @@ select
   cast(json_extract(fact_json, '$.recused') as boolean) as recused,
   json_extract_string(fact_json, '$.evidence_quote') as evidence_quote,
   cast(json_extract(fact_json, '$.confidence') as double) as confidence
-from validated
+from int_conflict_validation_udf
 where (
     role = 'expert_recommendation'
     and json_extract_string(fact_json, '$.document_type') = 'recommendation_record'

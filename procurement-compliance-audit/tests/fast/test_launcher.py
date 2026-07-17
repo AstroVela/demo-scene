@@ -36,11 +36,11 @@ def test_launcher_requires_current_packaged_vane_runtime():
 def test_launcher_freezes_exact_runtime_identifiers():
     launcher = _load_launcher()
 
-    assert launcher.EXPECTED_VANE_DISTRIBUTION_VERSION == "0.1.0.dev20260714234347"
-    assert launcher.EXPECTED_VANE_API_VERSION == "0.1.0.dev20260714234347"
-    assert launcher.EXPECTED_DUCKDB_PYTHON_VERSION == "0.1.0.dev20260714234347"
-    assert launcher.EXPECTED_DUCKDB_ENGINE_VERSION == "v1.6.0-dev121"
-    assert launcher.EXPECTED_DUCKDB_SOURCE_REVISION == "ca6948529b"
+    assert launcher.EXPECTED_VANE_DISTRIBUTION_VERSION == "0.1.0a1"
+    assert launcher.EXPECTED_VANE_API_VERSION == "0.1.0a1"
+    assert launcher.EXPECTED_DUCKDB_PYTHON_VERSION == "0.1.0a1"
+    assert launcher.EXPECTED_DUCKDB_ENGINE_VERSION == "v1.6.0-dev1"
+    assert launcher.EXPECTED_DUCKDB_SOURCE_REVISION == "398033a962"
 
 
 @pytest.mark.parametrize(
@@ -50,49 +50,49 @@ def test_launcher_freezes_exact_runtime_identifiers():
             "Vane distribution",
             (
                 "wrong",
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
-                "v1.6.0-dev121",
-                "ca6948529b",
+                "0.1.0a1",
+                "0.1.0a1",
+                "v1.6.0-dev1",
+                "398033a962",
             ),
         ),
         (
             "Vane API",
             (
-                "0.1.0.dev20260714234347",
+                "0.1.0a1",
                 "wrong",
-                "0.1.0.dev20260714234347",
-                "v1.6.0-dev121",
-                "ca6948529b",
+                "0.1.0a1",
+                "v1.6.0-dev1",
+                "398033a962",
             ),
         ),
         (
             "DuckDB Python",
             (
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
+                "0.1.0a1",
+                "0.1.0a1",
                 "wrong",
-                "v1.6.0-dev121",
-                "ca6948529b",
+                "v1.6.0-dev1",
+                "398033a962",
             ),
         ),
         (
             "DuckDB engine",
             (
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
+                "0.1.0a1",
+                "0.1.0a1",
+                "0.1.0a1",
                 "wrong",
-                "ca6948529b",
+                "398033a962",
             ),
         ),
         (
             "DuckDB source",
             (
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
-                "0.1.0.dev20260714234347",
-                "v1.6.0-dev121",
+                "0.1.0a1",
+                "0.1.0a1",
+                "0.1.0a1",
+                "v1.6.0-dev1",
                 "wrong",
             ),
         ),

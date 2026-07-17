@@ -10,7 +10,7 @@ This runbook contains the exact environment, installation, model-service, config
 | --- | --- |
 | Operating system | Ubuntu 24.04 x86_64, glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0.dev20260714234347` |
+| Vane | `vane-ai==0.1.0a1` |
 | PostgreSQL | `127.0.0.1:5432`, database `vane_insight` |
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
@@ -42,7 +42,7 @@ python -m pip install --upgrade pip
 ```bash
 python -m pip install -i https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  vane-ai==0.1.0.dev20260714234347
+  vane-ai==0.1.0a1
 ```
 
 Keep both indexes so Vane comes from TestPyPI while ordinary dependencies resolve from PyPI. Keep the exact version because the launcher rejects runtimes not validated for this demo.
@@ -58,7 +58,7 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 
 | Dependency | Purpose |
 | --- | --- |
-| `vane-ai==0.1.0.dev20260714234347` | Vane APIs, custom DuckDB, and workers |
+| `vane-ai==0.1.0a1` | Vane APIs, custom DuckDB, and workers |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `psycopg` | Read and initialize PostgreSQL raw tables |
 | `minio` | Read and initialize raw material objects in MinIO |
@@ -171,14 +171,14 @@ At runtime, the authoritative sources are the PostgreSQL `projects`, `suppliers`
 | --- | --- | --- | --- |
 | `stg_scores` | view | expert × supplier | Type, score, and supplier contracts |
 | `stg_evidence_images` | view | evidence image | Trusted locator and role |
-| `int_evidence_ocr` | table | evidence image | OCR text, confidence, and line count |
+| `int_evidence_ocr` | table | evidence image | Typed output from the SQL-called stateful OCR expression |
 | `int_evidence_ai` | table | evidence image | Raw Qwen JSON response |
 | `int_conflict_facts` | view | evidence image | Validated recommendation, participation, and recusal facts |
 | `int_score_metrics` | view | project × conflict signal | Peer average, score delta, and both rankings |
 | `audit_findings` | table | finding | Three deterministic rules |
 | `audit_summary` | table | project | Project-level audit status |
 
-`int_evidence_ai` is the only Python-materialized intermediate relation. Each image request is bound to `project_id/file_id`, independently of actor execution order. The returned `document_type` must match the fixture's trusted role; a mismatch triggers one contract-reinforced retry with the same image, and SQL applies the role binding again.
+`int_evidence_ai` is the only core intermediate relation assembled by Python business logic. The transient `*_udf` relations are defined in SQL and materialized by the active Runner. Each image request is bound to `project_id/file_id`, independently of actor execution order. The returned `document_type` must match the fixture's trusted role; a mismatch triggers one contract-reinforced retry with the same image, and SQL applies the role binding again.
 
 Use `queries.sql` to inspect all eight relations in the same connection:
 
@@ -233,9 +233,9 @@ to:
 runner: ray
 ```
 
-PostgreSQL/MinIO source contracts and business SQL remain unchanged. Both modes are end-to-end verified on the single-host fixture and use the same Runner-backed Relation path. Driver-local Arrow inputs are staged as temporary Parquet files, and `Relation.write_parquet()` dispatches OCR, AI, and validation plans through the active Vane Runner (`LocalRunner.run_write` or `RayRunner.run_write`). Vane selects the matching subprocess or Ray execution backend for batch functions. The materialized Arrow results are then registered in the driver's DuckDB catalog for deterministic joins and aggregates. A real multi-node target cluster still requires its own infrastructure smoke test.
+PostgreSQL/MinIO source contracts remain unchanged, and both modes use the same SQL and Relation pipeline. The pipeline attaches `EvidenceOcrActor` as `evidence_ocr_json(bucket, object_key)`; `int_evidence_ocr_udf.sql` calls it once per image as a direct Runner projection, and `int_evidence_ocr.sql` parses the materialized JSON. The response validator follows the same `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files, `Relation.write_parquet()` dispatches each direct UDF or AI relation through the active Runner, and results are registered in the driver's DuckDB catalog for the next pure SQL node. `vane-ai==0.1.0a1` is required because it preserves row-UDF passthrough columns on the Ray path. The staged stateful/stateless SQL UDF shape has been smoke-tested on both runners; a real multi-node target cluster still requires its own infrastructure smoke test.
 
-The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the shared materializer deliberately uses the Runner-backed write API instead of a direct DuckDB export. A narrow compatibility adapter only normalizes the Local Runner progress-callback signature in this build; it does not bypass the Runner.
+The shared materializer uses the Runner-backed write API rather than a direct DuckDB export, so Local and Ray follow the same execution boundary.
 
 ## Troubleshooting
 
@@ -253,11 +253,11 @@ The pinned Vane build does not implement `LocalRunner.run_iter_tables`, so the s
 
 | Component | Required identifier |
 | --- | --- |
-| Vane distribution metadata (`vane-ai`) | `0.1.0.dev20260714234347` |
-| `vane.__version__` | `0.1.0.dev20260714234347` |
-| DuckDB Python package | `0.1.0.dev20260714234347` |
-| DuckDB engine | `v1.6.0-dev121` |
-| DuckDB source revision | `ca6948529b` |
+| Vane distribution metadata (`vane-ai`) | `0.1.0a1` |
+| `vane.__version__` | `0.1.0a1` |
+| DuckDB Python package | `0.1.0a1` |
+| DuckDB engine | `v1.6.0-dev1` |
+| DuckDB source revision | `398033a962` |
 | OpenAI Python client | `2.45.0` |
 
 Any identity or required Vane API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
