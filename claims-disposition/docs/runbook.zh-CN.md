@@ -15,9 +15,7 @@
 | MinIO | `127.0.0.1:9000` |
 | 模型服务 | NVIDIA CUDA GPU 上的 Qwen2.5-VL-3B，监听 `127.0.0.1:8001` |
 
-已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、
-x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python
-次版本或其他 CPU 架构。
+已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python 次版本或其他 CPU 架构。
 
 安装项目侧 Ubuntu 工具：
 
@@ -49,9 +47,7 @@ python -m pip install --upgrade pip
 python -m pip install vane-ai
 ```
 
-不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的
-`pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝未经验证的
-Vane 或 custom DuckDB build。
+不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的 `pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝未经验证的 Vane 或 custom DuckDB build。
 
 ### 3. 安装 Demo
 
@@ -169,25 +165,13 @@ python -m pytest tests/fast -q
 | OCR | RapidOCR CPU；必需字段 `claim_number`、`claimant_name`、`loss_date`；最低平均置信度 `0.70` |
 | AI | OpenAI provider；`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
 
-仓库默认使用 `runner: local`，`runner: ray` 用于选择分布式路径。两种模式均已
-使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端验证。
+仓库默认使用 `runner: local`，`runner: ray` 用于选择分布式路径。两种模式均已使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端验证。
 
-Local 模式下，Pipeline 在 Driver 上创建一份 `DocumentOcrActor` 实现，对每个
-合格证明文档 locator 执行一次，再将不可变结果挂载为
-`document_ocr_json(bucket, object_key)`。模型则通过 Vane 公共 provider API 实例化，
-并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client
-不会跨越 LocalRunner 的 subprocess 边界。
+Local 模式下，Pipeline 在 Driver 上创建一份 `DocumentOcrActor` 实现，对每个合格证明文档 locator 执行一次，再将不可变结果挂载为 `document_ocr_json(bucket, object_key)`。模型则通过 Vane 公共 provider API 实例化，并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client 不会跨越 LocalRunner 的 subprocess 边界。
 
-Ray 模式下，`DocumentOcrActor` 挂载为有状态
-`document_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。
-OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式
-设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker
-留出足够的清理时间。
+Ray 模式下，`DocumentOcrActor` 挂载为有状态 `document_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker 留出足够的清理时间。
 
-两种模式下，`int_claim_document_ocr_udf.sql` 都对每份合格文档调用相同表达式，
-每个 `*_udf.sql` 文件也仍是直接交给 Runner 的投影；后续纯 SQL 解析、关联、
-分类或聚合相同的物化合同。Driver 输入会临时落为 Parquet，结果注册回 Driver
-的 DuckDB catalog。切换 Runner 只改变执行位置，不改变 SQL 与输出合同。
+两种模式下，`int_claim_document_ocr_udf.sql` 都对每份合格文档调用相同表达式，每个 `*_udf.sql` 文件也仍是直接交给 Runner 的投影；后续纯 SQL 解析、关联、分类或聚合相同的物化合同。Driver 输入会临时落为 Parquet，结果注册回 Driver 的 DuckDB catalog。切换 Runner 只改变执行位置，不改变 SQL 与输出合同。
 
 加载器会校验 YAML 结构、SQL identifier、loopback URL、必需值和数值范围。诊断不会打印完整 PostgreSQL DSN、MinIO secret 或 AI key。当 AI URL 是 loopback 地址时，Launcher 会清理 HTTP proxy 变量并补充 `NO_PROXY`/`no_proxy`。
 

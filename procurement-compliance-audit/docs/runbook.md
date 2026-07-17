@@ -15,9 +15,7 @@ This runbook contains the exact environment, installation, model-service, config
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
-The verified Vane release is published on public PyPI. Its Linux wheel targets
-CPython 3.12, x86_64, and `manylinux_2_39`; support for older glibc versions,
-other Python minor versions, or other CPU architectures is not guaranteed.
+The verified Vane release is published on public PyPI. Its Linux wheel targets CPython 3.12, x86_64, and `manylinux_2_39`; support for older glibc versions, other Python minor versions, or other CPU architectures is not guaranteed.
 
 Install the project-side Ubuntu tools:
 
@@ -45,9 +43,7 @@ python -m pip install --upgrade pip
 python -m pip install vane-ai
 ```
 
-No alternate package index is required. The command installs Vane from public
-PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1`
-runtime, and the launcher rejects other runtime identifiers.
+No alternate package index is required. The command installs Vane from public PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1` runtime, and the launcher rejects other runtime identifiers.
 
 ### 3. Install the demo
 
@@ -229,32 +225,13 @@ The checked-in configuration uses:
 runner: local
 ```
 
-The checked-in value is `runner: local`; change it to `runner: ray` for the
-distributed path. Both modes were verified end to end with public
-`vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
+The checked-in value is `runner: local`; change it to `runner: ray` for the distributed path. Both modes were verified end to end with public `vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
 
-On Local, the pipeline creates one `EvidenceOcrActor` implementation on the
-driver, processes every trusted evidence locator once, and attaches the
-immutable results as `evidence_ocr_json(bucket, object_key)`. It also
-instantiates the configured model through Vane's public provider API and
-reuses one async client on the driver. This keeps native ONNX sessions and the
-async provider client outside LocalRunner subprocess boundaries.
+On Local, the pipeline creates one `EvidenceOcrActor` implementation on the driver, processes every trusted evidence locator once, and attaches the immutable results as `evidence_ocr_json(bucket, object_key)`. It also instantiates the configured model through Vane's public provider API and reuses one async client on the driver. This keeps native ONNX sessions and the async provider client outside LocalRunner subprocess boundaries.
 
-On Ray, `EvidenceOcrActor` is attached as the stateful
-`evidence_ocr_json(bucket, object_key)` expression and Qwen runs through
-`vane.ai.prompt`. The OCR engine initializes lazily inside its isolated Actor
-worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the
-operator supplied another value, giving native Ray OCR workers enough time to
-shut down cleanly.
+On Ray, `EvidenceOcrActor` is attached as the stateful `evidence_ocr_json(bucket, object_key)` expression and Qwen runs through `vane.ai.prompt`. The OCR engine initializes lazily inside its isolated Actor worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied another value, giving native Ray OCR workers enough time to shut down cleanly.
 
-In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per
-image and `int_evidence_ocr.sql` parses the same materialized JSON. Response
-validation keeps the `int_conflict_validation_udf.sql` then
-`int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary
-Parquet files and Runner results are registered in the driver's DuckDB catalog
-for the next pure SQL node. Switching Runner changes execution placement, not
-SQL or output contracts. A real multi-node target cluster still requires its
-own infrastructure smoke test.
+In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per image and `int_evidence_ocr.sql` parses the same materialized JSON. Response validation keeps the `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files and Runner results are registered in the driver's DuckDB catalog for the next pure SQL node. Switching Runner changes execution placement, not SQL or output contracts. A real multi-node target cluster still requires its own infrastructure smoke test.
 
 ## Troubleshooting
 

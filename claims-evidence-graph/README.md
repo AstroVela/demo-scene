@@ -29,9 +29,7 @@ real claim adjudication accuracy.
 
 Run the synthetic fixture demo:
 
-Vane is installed from public PyPI. The reproducible environment currently
-constrains the public release to `vane-ai==0.1.0a1`; outside this setup it can
-also be installed directly with `python -m pip install vane-ai`.
+Vane is installed from public PyPI. The reproducible environment currently constrains the public release to `vane-ai==0.1.0a1`; outside this setup it can also be installed directly with `python -m pip install vane-ai`.
 
 ```bash
 cd claims-evidence-graph

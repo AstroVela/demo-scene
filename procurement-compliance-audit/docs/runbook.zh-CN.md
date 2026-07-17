@@ -15,9 +15,7 @@
 | MinIO | `127.0.0.1:9000`，HTTP |
 | 模型服务 | 本机 NVIDIA GPU 上的 `Qwen2.5-VL-3B-Instruct` |
 
-已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、
-x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python
-次版本或其他 CPU 架构。
+已验证的 Vane 正式发布包位于公共 PyPI。其 Linux wheel 面向 CPython 3.12、x86_64 和 `manylinux_2_39` 构建，因此不承诺支持更旧 glibc、其他 Python 次版本或其他 CPU 架构。
 
 安装项目侧 Ubuntu 工具：
 
@@ -45,9 +43,7 @@ python -m pip install --upgrade pip
 python -m pip install vane-ai
 ```
 
-不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的
-`pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝其他
-Runtime 标识。
+不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的 `pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝其他 Runtime 标识。
 
 ### 3. 安装 Demo
 
@@ -229,28 +225,13 @@ Qwen 只返回文档类型、专家编号、供应商、推荐、参评、回避
 runner: local
 ```
 
-仓库实际默认值是 `runner: local`；改成 `runner: ray` 即可选择分布式路径。两种
-模式均已使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端
-验证。
+仓库实际默认值是 `runner: local`；改成 `runner: ray` 即可选择分布式路径。两种模式均已使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端验证。
 
-Local 模式下，Pipeline 在 Driver 上创建一份 `EvidenceOcrActor` 实现，对每个
-可信证据 locator 执行一次，再将不可变结果挂载为
-`evidence_ocr_json(bucket, object_key)`。模型通过 Vane 公共 provider API 实例化，
-并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client
-不会跨越 LocalRunner 的 subprocess 边界。
+Local 模式下，Pipeline 在 Driver 上创建一份 `EvidenceOcrActor` 实现，对每个可信证据 locator 执行一次，再将不可变结果挂载为 `evidence_ocr_json(bucket, object_key)`。模型通过 Vane 公共 provider API 实例化，并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client 不会跨越 LocalRunner 的 subprocess 边界。
 
-Ray 模式下，`EvidenceOcrActor` 挂载为有状态
-`evidence_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。
-OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式
-设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker
-留出足够的清理时间。
+Ray 模式下，`EvidenceOcrActor` 挂载为有状态 `evidence_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker 留出足够的清理时间。
 
-两种模式下，`int_evidence_ocr_udf.sql` 都对每张图片调用相同表达式，
-`int_evidence_ocr.sql` 也解析相同的物化 JSON。响应校验仍采用
-`int_conflict_validation_udf.sql → int_conflict_facts.sql` 分层。Driver 输入临时
-落为 Parquet，Runner 结果注册回 Driver 的 DuckDB catalog 供下一段纯 SQL 使用。
-切换 Runner 只改变执行位置，不改变 SQL 与输出合同。真实多节点目标集群仍需
-单独做基础设施 smoke test。
+两种模式下，`int_evidence_ocr_udf.sql` 都对每张图片调用相同表达式，`int_evidence_ocr.sql` 也解析相同的物化 JSON。响应校验仍采用 `int_conflict_validation_udf.sql → int_conflict_facts.sql` 分层。Driver 输入临时落为 Parquet，Runner 结果注册回 Driver 的 DuckDB catalog 供下一段纯 SQL 使用。切换 Runner 只改变执行位置，不改变 SQL 与输出合同。真实多节点目标集群仍需单独做基础设施 smoke test。
 
 ## 排错
 

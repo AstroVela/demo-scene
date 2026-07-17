@@ -195,8 +195,7 @@ representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
 
 安装依赖并运行离线样例：
 
-依赖文件会从公共 PyPI 解析已验证的 Vane 正式发布包；直接安装 Vane 的等价命令是
-`pip install vane-ai`。
+依赖文件会从公共 PyPI 解析已验证的 Vane 正式发布包；直接安装 Vane 的等价命令是 `pip install vane-ai`。
 
 ~~~bash
 python3 -m venv .venv

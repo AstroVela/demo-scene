@@ -33,8 +33,7 @@ repository.
 
 Python 3.10 or newer is required:
 
-`requirements.txt` installs the validated `vane-ai==0.1.0a1` release from
-public PyPI. Vane can also be installed directly with `pip install vane-ai`.
+`requirements.txt` installs the validated `vane-ai==0.1.0a1` release from public PyPI. Vane can also be installed directly with `pip install vane-ai`.
 
 ~~~bash
 python3 -m venv .venv

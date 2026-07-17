@@ -15,9 +15,7 @@ This runbook contains the exact environment, installation, service, configuratio
 | MinIO | `127.0.0.1:9000` |
 | Model service | Qwen2.5-VL-3B on an NVIDIA CUDA GPU at `127.0.0.1:8001` |
 
-The verified Vane release is published on public PyPI. Its Linux wheel targets
-CPython 3.12, x86_64, and `manylinux_2_39`; a matching wheel is not promised for
-older glibc, another Python minor version, or another CPU architecture.
+The verified Vane release is published on public PyPI. Its Linux wheel targets CPython 3.12, x86_64, and `manylinux_2_39`; a matching wheel is not promised for older glibc, another Python minor version, or another CPU architecture.
 
 Install the project-side Ubuntu tools:
 
@@ -49,9 +47,7 @@ The environment directory may have another name. The launcher validates the acti
 python -m pip install vane-ai
 ```
 
-No alternate package index is required. The command installs Vane from public
-PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1`
-runtime, and the launcher rejects unvalidated Vane or custom DuckDB builds.
+No alternate package index is required. The command installs Vane from public PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1` runtime, and the launcher rejects unvalidated Vane or custom DuckDB builds.
 
 ### 3. Install the demo
 
@@ -169,32 +165,13 @@ There is no AI mock fallback. An unavailable service, unreadable image, invalid 
 | OCR | RapidOCR on CPU; required fields `claim_number`, `claimant_name`, `loss_date`; minimum mean confidence `0.70` |
 | AI | OpenAI provider; `http://127.0.0.1:8001/v1`; model `Qwen2.5-VL-3B-Instruct`; concurrency `1`; timeout `120` seconds |
 
-The checked-in configuration uses `runner: local`; `runner: ray` selects the
-distributed path. Both modes were verified end to end with public
-`vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
+The checked-in configuration uses `runner: local`; `runner: ray` selects the distributed path. Both modes were verified end to end with public `vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
 
-On Local, the pipeline creates one `DocumentOcrActor` implementation on the
-driver, runs it once for every eligible supporting-document locator, and
-attaches the immutable results as
-`document_ocr_json(bucket, object_key)`. It also instantiates the configured
-model through Vane's public provider API and reuses one async client on the
-driver. This keeps the native ONNX sessions and async provider client outside
-LocalRunner subprocess boundaries.
+On Local, the pipeline creates one `DocumentOcrActor` implementation on the driver, runs it once for every eligible supporting-document locator, and attaches the immutable results as `document_ocr_json(bucket, object_key)`. It also instantiates the configured model through Vane's public provider API and reuses one async client on the driver. This keeps the native ONNX sessions and async provider client outside LocalRunner subprocess boundaries.
 
-On Ray, `DocumentOcrActor` is attached as the stateful
-`document_ocr_json(bucket, object_key)` expression and Qwen runs through
-`vane.ai.prompt`. The OCR engine initializes lazily inside the isolated Actor
-worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the
-operator supplied another value, giving native Ray OCR workers enough time to
-shut down cleanly.
+On Ray, `DocumentOcrActor` is attached as the stateful `document_ocr_json(bucket, object_key)` expression and Qwen runs through `vane.ai.prompt`. The OCR engine initializes lazily inside the isolated Actor worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied another value, giving native Ray OCR workers enough time to shut down cleanly.
 
-In both modes, `int_claim_document_ocr_udf.sql` calls the same expression once
-per eligible document, every `*_udf.sql` file remains a direct Runner
-projection, and the following pure SQL file parses, joins, classifies, or
-aggregates the same materialized contract. Driver-local inputs are staged as
-temporary Parquet files and results are registered back in the driver's DuckDB
-catalog. Switching Runner changes execution placement, not SQL or output
-contracts.
+In both modes, `int_claim_document_ocr_udf.sql` calls the same expression once per eligible document, every `*_udf.sql` file remains a direct Runner projection, and the following pure SQL file parses, joins, classifies, or aggregates the same materialized contract. Driver-local inputs are staged as temporary Parquet files and results are registered back in the driver's DuckDB catalog. Switching Runner changes execution placement, not SQL or output contracts.
 
 The loader validates YAML shape, SQL identifiers, loopback URLs, required values, and numeric ranges. Diagnostics avoid printing the complete PostgreSQL DSN, MinIO secret, or AI key. For a loopback AI URL, the launcher removes HTTP proxy variables and augments `NO_PROXY`/`no_proxy`.
 
