@@ -59,6 +59,12 @@ output/audit_summary.jsonl   # 1 row
 
 ## Implementation layout and where Vane is used
 
+The DAG includes all 10 SQL files. Solid arrows show the main execution flow; dashed arrows show additional direct dependencies on trusted runtime data.
+
+![Procurement compliance audit SQL dependency DAG](docs/vane-procurement-audit-sql-dag.png)
+
+The purple `int_evidence_ai` node is not a SQL file: `ai.py` combines qualified OCR, trusted source metadata, MinIO image bytes, and supplier aliases, then uses Vane AI to create the relation that re-enters SQL validation.
+
 ```text
 ./
 ├── pyproject.toml
@@ -131,32 +137,29 @@ output/audit_summary.jsonl   # 1 row
 │   ├── sql/
 │   │   ├── staging/
 │   │   │   ├── stg_scores.sql
-│   │   │   │   # Normalizes PostgreSQL expert scores and joins supplier names and aliases.
+│   │   │   │   # Normalizes valid PostgreSQL expert scores and attaches canonical supplier names and aliases.
 │   │   │   └── stg_evidence_images.sql
-│   │   │       # Selects OCR-supported PNG evidence and trusted MinIO locators.
+│   │   │       # Selects OCR-supported PNG evidence while preserving trusted project, role, and MinIO locator fields.
 │   │   │
 │   │   ├── intermediate/
 │   │   │   ├── int_evidence_ocr_udf.sql
-│   │   │   │   # Calls evidence_ocr_json as a direct Runner SQL projection.
+│   │   │   │   # Direct Runner SQL invokes evidence_ocr_json for every staged evidence image.
 │   │   │   ├── int_evidence_ocr.sql
-│   │   │   │   # Converts the Runner-produced JSON into typed OCR fields.
+│   │   │   │   # Parses Runner-produced JSON into typed OCR status, text, confidence, and line-count fields while retaining the raw response.
 │   │   │   ├── int_conflict_validation_inputs.sql
-│   │   │   │   # Binds AI responses to trusted PostgreSQL evidence roles.
+│   │   │   │   # Joins each Vane AI response back to trusted PostgreSQL project, file, and evidence-role identities.
 │   │   │   ├── int_conflict_validation_udf.sql
-│   │   │   │   # Applies the strict response validator as a direct Runner SQL UDF.
+│   │   │   │   # Direct Runner SQL applies the strict AI response and document-type validator.
 │   │   │   ├── int_conflict_facts.sql
-│   │   │   │   # Converts Runner-validated AI JSON into typed recommendation,
-│   │   │   │   # participation, recusal, evidence-text, and confidence facts.
+│   │   │   │   # Parses validated JSON into typed compliance facts and rejects evidence whose trusted role disagrees with its document type.
 │   │   │   └── int_score_metrics.sql
-│   │   │       # Matches supplier names and aliases, computes expert-versus-peer
-│   │   │       # score deviation, and reranks suppliers with and without the expert.
+│   │   │       # Joins both evidence roles, resolves supplier aliases, computes expert-versus-peer deviation, and reranks with and without the expert.
 │   │   │
 │   │   └── marts/
 │   │       ├── audit_findings.sql
-│   │       │   # Uses deterministic SQL for non-recusal, score-bias, and award-impact findings.
+│   │       │   # Emits the three deterministic non-recusal, score-bias, and award-impact findings only from eligible evidence.
 │   │       └── audit_summary.sql
-│   │           # Summarizes findings as passed, review_required,
-│   │           # or insufficient_evidence.
+│   │           # Combines project settings, metrics, and finding counts into passed, review_required, or insufficient_evidence status.
 │   │
 │   ├── output_writer.py
 │   │   # Validates findings, summary, and evidence references, then atomically

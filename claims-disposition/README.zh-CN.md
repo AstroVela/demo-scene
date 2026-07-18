@@ -75,6 +75,12 @@ verified 4 claim dispositions: CLM-APPROVE=approve_for_payment, CLM-DENY=deny_cl
 
 ## 实现文件组织与 Vane 使用位置
 
+下图包含全部 18 个 SQL 文件。实线表示主执行流，虚线表示跨阶段的其他直接依赖。
+
+![理赔分流 SQL 依赖 DAG](docs/vane-claims-sql-dag.png)
+
+紫色的 `int_claim_photo_ai` 节点不是 SQL 文件：`photo_ai.py` 通过 Vane AI 创建该 Relation，结果随后重新进入 SQL DAG，完成可信身份绑定和 Runner 校验。
+
 ```text
 claims-disposition/
 ├── pyproject.toml
@@ -138,26 +144,38 @@ claims-disposition/
 │   │   │       # 将不含凭据的 OCR、模型和运行参数暴露给 SQL。
 │   │   │
 │   │   ├── intermediate/
-│   │   │   ├── int_claim_material_inputs.sql / int_claim_object_facts.sql
-│   │   │   │   # 用 SQL 表达可信 locator 门控与对象可用性事实。
-│   │   │   ├── int_claim_*_udf.sql
-│   │   │   │   # 直接交给 Runner 的 SQL 投影：MinIO 探测、Hash、图片质量、
-│   │   │   │   # OCR、文档合同和模型响应校验。
+│   │   │   ├── int_claim_material_inputs.sql
+│   │   │   │   # 将材料记录与不含凭据的运行参数组合，并在 Runner 访问前对规范化 locator 做门控。
+│   │   │   ├── int_claim_object_probe_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，只对可信 MinIO locator 调用 minio_object_exists。
+│   │   │   ├── int_claim_object_facts.sql
+│   │   │   │   # 将探测结果左关联回每条材料记录，并把缺少探测结果视为对象不可用。
+│   │   │   ├── int_claim_object_hash_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，为每个可用对象计算作为内容身份的 SHA-256。
+│   │   │   ├── int_claim_photo_quality_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，检查可用 JPEG 损伤照片的可读性、可用性和质量。
+│   │   │   ├── int_claim_document_ocr_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，对每份可用 PNG 证明文档调用 OCR Actor 或 Local Lookup。
+│   │   │   ├── int_claim_document_fields_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，从每个规范化 OCR 响应中提取规则要求的字段。
+│   │   │   ├── int_claim_document_quality_inputs.sql
+│   │   │   │   # 绑定 OCR、提取字段、Claim 身份、必需字段和最低置信度。
+│   │   │   ├── int_claim_document_quality_udf.sql
+│   │   │   │   # 通过直接 Runner SQL 评估绑定后的文档合同，并输出文档可用性结果。
 │   │   │   ├── int_claim_material_facts.sql
-│   │   │   │   # 关联各 UDF 输出，把逐文件事实聚合为一条 Claim 记录。
+│   │   │   │   # 关联所有 UDF 输出，聚合为每个 Claim 一行，并为 AI 构造有序且已验证的照片输入。
 │   │   │   ├── int_claim_damage_validation_inputs.sql
-│   │   │   │   # 把模型响应绑定到可信 claim、file 和 SHA-256 身份。
+│   │   │   │   # 展开已验证照片输入，并把每个 Vane AI 响应绑定到可信 claim、file 和 SHA-256 身份。
+│   │   │   ├── int_claim_damage_validation_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，规范化并严格校验每个不可信的损伤模型响应。
 │   │   │   ├── int_claim_damage_facts.sql
-│   │   │   │   # 将 Runner 校验后的逐照片损伤事实聚合到 Claim 级别，
-│   │   │   │   # 识别结果冲突、不确定性和高严重程度风险。
+│   │   │   │   # 对 Runner 校验后的逐照片结果分类并按 Claim 聚合，同时识别冲突、不确定性和严重程度风险。
 │   │   │   └── int_claim_decision_facts.sql
-│   │   │       # 使用确定性 SQL 生成补充材料、人工复核、
-│   │   │       # 拒赔候选和支付候选，并明确规则优先级。
+│   │   │       # 生成四种确定性分流候选，并应用明确的规则优先级。
 │   │   │
 │   │   └── marts/
 │   │       └── claim_disposition.sql
-│   │           # 生成最终九列输出，包括 disposition、原因、
-│   │           # 下一步动作和 supporting_facts_json。
+│   │           # 将命中的规则映射为最终九列合同，包括 disposition、原因、下一步动作和 supporting_facts_json。
 │   │
 │   ├── output_writer.py
 │   │   # 校验最终输出合同，并在一个事务中替换 PostgreSQL 结果快照。

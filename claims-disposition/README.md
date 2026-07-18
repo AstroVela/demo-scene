@@ -75,6 +75,12 @@ There is no AI mock fallback: unavailable services, unreadable images, invalid A
 
 ## Implementation layout and where Vane is used
 
+The DAG includes all 18 SQL files. Solid arrows show the main execution flow; dashed arrows show additional direct dependencies that cross phases.
+
+![Claims disposition SQL dependency DAG](docs/vane-claims-sql-dag.png)
+
+The purple `int_claim_photo_ai` node is not a SQL file: `photo_ai.py` creates that relation through Vane AI, after which the result re-enters the SQL DAG for trusted identity binding and Runner validation.
+
 ```text
 claims-disposition/
 ├── pyproject.toml
@@ -138,26 +144,38 @@ claims-disposition/
 │   │   │       # Exposes credential-free OCR, model, and run settings to SQL.
 │   │   │
 │   │   ├── intermediate/
-│   │   │   ├── int_claim_material_inputs.sql / int_claim_object_facts.sql
-│   │   │   │   # Express trusted locator gating and object availability as SQL facts.
-│   │   │   ├── int_claim_*_udf.sql
-│   │   │   │   # Direct Runner SQL projections for MinIO probes, hashes, photo quality,
-│   │   │   │   # OCR, document contracts, and model-response validation.
+│   │   │   ├── int_claim_material_inputs.sql
+│   │   │   │   # Combines material rows with secret-free run settings and gates canonical runtime locators before Runner access.
+│   │   │   ├── int_claim_object_probe_udf.sql
+│   │   │   │   # Direct Runner SQL calls minio_object_exists only for trusted MinIO locators.
+│   │   │   ├── int_claim_object_facts.sql
+│   │   │   │   # Left-joins probe results to every material and treats a missing result as an unavailable object.
+│   │   │   ├── int_claim_object_hash_udf.sql
+│   │   │   │   # Direct Runner SQL computes the SHA-256 identity of every available object.
+│   │   │   ├── int_claim_photo_quality_udf.sql
+│   │   │   │   # Direct Runner SQL checks the readability, usability, and quality of available JPEG damage photos.
+│   │   │   ├── int_claim_document_ocr_udf.sql
+│   │   │   │   # Direct Runner SQL invokes the OCR Actor or Local lookup for each available PNG supporting document.
+│   │   │   ├── int_claim_document_fields_udf.sql
+│   │   │   │   # Direct Runner SQL extracts the rule-required fields from each normalized OCR response.
+│   │   │   ├── int_claim_document_quality_inputs.sql
+│   │   │   │   # Binds OCR, extracted fields, claim identity, required fields, and the confidence threshold.
+│   │   │   ├── int_claim_document_quality_udf.sql
+│   │   │   │   # Direct Runner SQL evaluates the bound document contract and emits a usability result.
 │   │   │   ├── int_claim_material_facts.sql
-│   │   │   │   # Joins UDF outputs and aggregates per-file facts into one claim row.
+│   │   │   │   # Joins all UDF outputs, aggregates one row per claim, and builds ordered verified photo inputs for AI.
 │   │   │   ├── int_claim_damage_validation_inputs.sql
-│   │   │   │   # Binds model responses to trusted claim, file, and SHA-256 identities.
+│   │   │   │   # Expands verified photo inputs and binds each Vane AI response to trusted claim, file, and SHA-256 identities.
+│   │   │   ├── int_claim_damage_validation_udf.sql
+│   │   │   │   # Direct Runner SQL normalizes and strictly validates each untrusted damage-model response.
 │   │   │   ├── int_claim_damage_facts.sql
-│   │   │   │   # Aggregates Runner-validated photo damage facts per claim and
-│   │   │   │   # detects conflicts, uncertainty, and high-severity risk.
+│   │   │   │   # Classifies Runner-validated photo results, aggregates them per claim, and detects conflict, uncertainty, and severity risk.
 │   │   │   └── int_claim_decision_facts.sql
-│   │   │       # Uses deterministic SQL to build request-materials, manual-review,
-│   │   │       # denial, and payment candidates with explicit precedence.
+│   │   │       # Builds the four deterministic disposition candidates and applies their explicit precedence.
 │   │   │
 │   │   └── marts/
 │   │       └── claim_disposition.sql
-│   │           # Produces the final nine columns, including disposition, reason,
-│   │           # next action, and supporting_facts_json.
+│   │           # Maps the winning rule to the final nine-column disposition, reason, next action, and supporting_facts_json contract.
 │   │
 │   ├── output_writer.py
 │   │   # Validates the output contract and replaces the PostgreSQL snapshot atomically.

@@ -59,6 +59,12 @@ output/audit_summary.jsonl   # 1 行
 
 ## 实现文件组织与 Vane 使用位置
 
+下图包含全部 10 个 SQL 文件。实线表示主执行流，虚线表示对可信运行时数据的其他跨阶段直接依赖。
+
+![采购合规审计 SQL 依赖 DAG](docs/vane-procurement-audit-sql-dag.png)
+
+紫色的 `int_evidence_ai` 节点不是 SQL 文件：`ai.py` 将通过门槛的 OCR、可信来源元数据、MinIO 图片字节和供应商别名组合起来，通过 Vane AI 创建该 Relation，再交回 SQL 校验链路。
+
 ```text
 ./
 ├── pyproject.toml
@@ -131,32 +137,29 @@ output/audit_summary.jsonl   # 1 行
 │   ├── sql/
 │   │   ├── staging/
 │   │   │   ├── stg_scores.sql
-│   │   │   │   # 将 PostgreSQL 专家评分标准化，并关联供应商名称和别名。
+│   │   │   │   # 标准化有效的 PostgreSQL 专家评分，并附加规范供应商名称和别名。
 │   │   │   └── stg_evidence_images.sql
-│   │   │       # 选择支持 OCR 的 PNG 证据及其可信 MinIO locator。
+│   │   │       # 选择支持 OCR 的 PNG 证据，同时保留可信项目、角色和 MinIO locator 字段。
 │   │   │
 │   │   ├── intermediate/
 │   │   │   ├── int_evidence_ocr_udf.sql
-│   │   │   │   # 将 evidence_ocr_json 作为直接交给 Runner 的 SQL 投影调用。
+│   │   │   │   # 通过直接 Runner SQL，对每张暂存证据图片调用 evidence_ocr_json。
 │   │   │   ├── int_evidence_ocr.sql
-│   │   │   │   # 将 Runner 生成的 JSON 转换成类型明确的 OCR 字段。
+│   │   │   │   # 将 Runner 生成的 JSON 解析成类型明确的 OCR 状态、文本、置信度和行数，并保留原始响应。
 │   │   │   ├── int_conflict_validation_inputs.sql
-│   │   │   │   # 把 AI 响应绑定到 PostgreSQL 中可信的证据角色。
+│   │   │   │   # 将每个 Vane AI 响应重新关联到 PostgreSQL 中可信的项目、文件和证据角色身份。
 │   │   │   ├── int_conflict_validation_udf.sql
-│   │   │   │   # 将严格响应校验器作为直接 Runner SQL UDF 执行。
+│   │   │   │   # 通过直接 Runner SQL 应用严格的 AI 响应和文档类型校验器。
 │   │   │   ├── int_conflict_facts.sql
-│   │   │   │   # 将 Runner 校验后的 AI JSON 转成推荐、参评、
-│   │   │   │   # 回避、证据原文和置信度等类型明确的事实。
+│   │   │   │   # 将校验后的 JSON 解析为类型明确的合规事实，并拒绝可信角色与文档类型不一致的证据。
 │   │   │   └── int_score_metrics.sql
-│   │   │       # 匹配供应商名称和别名，计算专家与 peers 的评分差，
-│   │   │       # 并重新计算包含和剔除该专家时的供应商排名。
+│   │   │       # 关联两类证据、解析供应商别名、计算专家与 peers 的评分差，并重排包含或剔除该专家时的名次。
 │   │   │
 │   │   └── marts/
 │   │       ├── audit_findings.sql
-│   │       │   # 用确定性 SQL 生成未回避、评分偏高和中标影响三类 Finding。
+│   │       │   # 只从满足证据门槛的数据中生成未回避、评分偏高和中标影响三类确定性 Finding。
 │   │       └── audit_summary.sql
-│   │           # 汇总 Finding，并生成 passed、review_required
-│   │           # 或 insufficient_evidence 项目状态。
+│   │           # 组合项目参数、指标和 Finding 计数，生成 passed、review_required 或 insufficient_evidence 状态。
 │   │
 │   ├── output_writer.py
 │   │   # 校验 Finding、Summary 和证据引用，再分别原子替换两个 JSONL 快照。
