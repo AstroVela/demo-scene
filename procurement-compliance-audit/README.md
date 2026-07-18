@@ -15,7 +15,7 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls`, the strict response validator with `@vane.func`, and Qwen is accessed through Vane's AI APIs. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local executes real RapidOCR once on the driver and exposes immutable results to SQL; Ray attaches the OCR worker as a stateful expression and invokes Qwen through the `vane.ai.prompt` AI Function.
+Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls`, the strict response validator with `@vane.func`, and Qwen is accessed through Vane's AI APIs. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local creates one RapidOCR engine on the driver, processes each trusted evidence locator once, and exposes the immutable results to SQL; Ray attaches the OCR worker as a stateful expression and invokes Qwen through the `vane.ai.prompt` AI Function.
 
 ## Architecture
 
@@ -42,7 +42,7 @@ PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
 
 ## Run the demo
 
-The demo installs Vane from public PyPI (`pip install vane-ai`) and requires running PostgreSQL, MinIO, and local Qwen services. Follow the [complete runbook](docs/runbook.md), then run:
+This demo requires CPython 3.12 and pins the public PyPI release `vane-ai==0.1.0a1`. The release provides CPython 3.10, 3.11, and 3.12 `manylinux_2_28_x86_64` wheels (glibc 2.28 or newer), but the launcher accepts only this demo's validated CPython 3.12 runtime. Follow the [complete runbook](docs/runbook.md) to create the environment, install Vane with `python -m pip install vane-ai`, install the demo with `python -m pip install -r requirements.txt`, and prepare running PostgreSQL, MinIO, and local Qwen services. Then run:
 
 ```bash
 python scripts/run_demo.py e2e
@@ -59,15 +59,28 @@ output/audit_summary.jsonl   # 1 row
 
 ## Implementation layout and where Vane is used
 
+The DAG includes all 10 SQL files. Solid arrows show the main execution flow; dashed arrows show additional direct dependencies on trusted runtime data.
+
+![Procurement compliance audit SQL dependency DAG](docs/vane-procurement-audit-sql-dag.png)
+
+The purple `int_evidence_ai` node is not a SQL file: `ai.py` combines qualified OCR, trusted source metadata, MinIO image bytes, and supplier aliases, then uses Vane AI to create the relation that re-enters SQL validation.
+
 ```text
-<project-root>/
+./
+├── pyproject.toml
+│   # Declares Python/runtime dependencies, including the exact public-PyPI Vane pin.
+│
+├── requirements.txt
+│   # Installs this source tree and its fast-test extra from pyproject.toml.
+│
 ├── runtime.yml
 │   # Configures the Vane Runner (Local by default), PostgreSQL, MinIO, OCR,
 │   # Qwen, and the JSONL output directory.
 │
 ├── scripts/
 │   └── run_demo.py
-│       # Demo entry point; verifies Python, Vane, and DuckDB before invoking the CLI.
+│       # Verifies CPython 3.12, exact Vane/DuckDB identities, required APIs,
+│       # package origins, and loopback networking before invoking the CLI.
 │
 ├── fixtures/expert-score-anomaly/
 │   ├── project.json
@@ -82,7 +95,8 @@ output/audit_summary.jsonl   # 1 row
 │
 ├── src/procurement_audit_sql_demo/
 │   ├── cli.py
-│   │   # Dispatches fixture, run, and e2e and prints the audit and ranking results.
+│   │   # Dispatches fixture, run, and e2e; prints audit/ranking results and
+│   │   # the capabilities exercised by the selected Runner.
 │   │
 │   ├── config.py
 │   │   # Loads and strictly validates runtime.yml into typed runtime settings.
@@ -103,65 +117,62 @@ output/audit_summary.jsonl   # 1 row
 │   │   # then converts them into a typed Arrow SourceBundle.
 │   │
 │   ├── pipeline.py
-│   │   # Main eight-node DAG orchestrator: reads sources, runs OCR and AI,
-│   │   # executes score SQL, builds two marts, and publishes the final JSONL.
-│   │   └── [Vane] Uses vane.configure to select Local or Ray Runner;
-│   │       exposes Local OCR results or a Ray OCR Actor to the same SQL call;
-│   │       uses Relation.write_parquet for Runner-backed SQL stages.
+│   │   # Owns the driver DuckDB catalog and a separate Runner connection, stages
+│   │   # their boundary through temporary Parquet, and executes all eight core Relations.
+│   │   └── [Vane] vane.configure selects Local or Ray; Relation.write_parquet
+│   │       materializes direct OCR/validation projections back into the driver catalog.
+│   │       Local attaches a driver-built OCR lookup; Ray attaches EvidenceOcrActor.
 │   │
 │   ├── vane_functions.py
-│   │   # Normalizes OCR output and enforces the strict AI JSON contract.
-│   │   └── [Vane] validate_audit_fact_json is a stateless Function;
-│   │       EvidenceOcrActor runs directly on Local or is attached as the
-│   │       stateful evidence_ocr_json SQL expression on Ray.
+│   │   # Normalizes OCR output and enforces the strict AI JSON/document-type contract.
+│   │   └── [Vane] @vane.func defines validate_audit_fact_json; @vane.cls defines
+│   │       EvidenceOcrActor, instantiated on the Local driver or attached on Ray.
 │   │
 │   ├── ai.py
 │   │   # Combines OCR text, supplier aliases, and images into multimodal requests,
 │   │   # binds facts to trusted evidence roles, and retries one contract failure.
-│   │   └── [Vane] Uses the public provider API on Local and vane.ai.prompt on Ray,
-│   │       while preserving the same request, retry, and response table contract.
+│   │   └── [Vane] Local uses vane.ai.load_provider and reuses one async prompter
+│   │       on the driver; Ray uses vane.ai.prompt and Runner materialization.
 │   │
 │   ├── sql/
 │   │   ├── staging/
 │   │   │   ├── stg_scores.sql
-│   │   │   │   # Normalizes PostgreSQL expert scores and joins supplier names and aliases.
+│   │   │   │   # Normalizes valid PostgreSQL expert scores and attaches canonical supplier names and aliases.
 │   │   │   └── stg_evidence_images.sql
-│   │   │       # Selects OCR-supported PNG evidence and trusted MinIO locators.
+│   │   │       # Selects OCR-supported PNG evidence while preserving trusted project, role, and MinIO locator fields.
 │   │   │
 │   │   ├── intermediate/
 │   │   │   ├── int_evidence_ocr_udf.sql
-│   │   │   │   # Calls evidence_ocr_json as a direct Runner SQL projection.
+│   │   │   │   # Direct Runner SQL invokes evidence_ocr_json for every staged evidence image.
 │   │   │   ├── int_evidence_ocr.sql
-│   │   │   │   # Converts the Runner-produced JSON into typed OCR fields.
+│   │   │   │   # Parses Runner-produced JSON into typed OCR status, text, confidence, and line-count fields while retaining the raw response.
 │   │   │   ├── int_conflict_validation_inputs.sql
-│   │   │   │   # Binds AI responses to trusted PostgreSQL evidence roles.
+│   │   │   │   # Joins each Vane AI response back to trusted PostgreSQL project, file, and evidence-role identities.
 │   │   │   ├── int_conflict_validation_udf.sql
-│   │   │   │   # Applies the strict response validator as a direct Runner SQL UDF.
+│   │   │   │   # Direct Runner SQL applies the strict AI response and document-type validator.
 │   │   │   ├── int_conflict_facts.sql
-│   │   │   │   # Converts Runner-validated AI JSON into typed recommendation,
-│   │   │   │   # participation, recusal, evidence-text, and confidence facts.
+│   │   │   │   # Parses validated JSON into typed compliance facts and rejects evidence whose trusted role disagrees with its document type.
 │   │   │   └── int_score_metrics.sql
-│   │   │       # Matches supplier names and aliases, computes expert-versus-peer
-│   │   │       # score deviation, and reranks suppliers with and without the expert.
+│   │   │       # Joins both evidence roles, resolves supplier aliases, computes expert-versus-peer deviation, and reranks with and without the expert.
 │   │   │
 │   │   └── marts/
 │   │       ├── audit_findings.sql
-│   │       │   # Uses deterministic SQL for non-recusal, score-bias, and award-impact findings.
+│   │       │   # Emits the three deterministic non-recusal, score-bias, and award-impact findings only from eligible evidence.
 │   │       └── audit_summary.sql
-│   │           # Summarizes findings as passed, review_required,
-│   │           # or insufficient_evidence.
+│   │           # Combines project settings, metrics, and finding counts into passed, review_required, or insufficient_evidence status.
 │   │
 │   ├── output_writer.py
-│   │   # Validates findings, summary, and evidence references, then atomically writes JSONL.
+│   │   # Validates findings, summary, and evidence references, then atomically
+│   │   # replaces each of the two JSONL snapshots.
 │   │
 │   └── verify_outputs.py
-│       # Verifies the synthetic case produces three findings and the expected reranking.
+│       # Verifies the synthetic case before publication: three findings and reranking.
 │
 └── tests/fast/
     # Covers source contracts, OCR Actor, AI contract, SQL DAG, Runner, and publication.
 ```
 
-The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → output_writer.py`. Local keeps native OCR and the async provider client on the driver; Ray attaches the reusable OCR Actor and executes AI through `vane.ai.prompt`. The SQL UDF boundaries and typed outputs remain the same. Each UDF call is isolated in a visible `*_udf.sql` node; downstream SQL owns parsing, trusted-role filtering, score deviation, reranking, and audit rules.
+The execution path is `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/validation → SQL Relations → verify_outputs.py → output_writer.py`. The driver reads PostgreSQL/MinIO, validates the Arrow `SourceBundle`, owns the pure-SQL DuckDB catalog, verifies the fixture result, and publishes JSONL. For the OCR and response-validation `*_udf.sql` projections, `pipeline.py` stages driver inputs as temporary Parquet, executes them through the selected Vane Runner, and registers the materialized results back in the driver catalog. Local builds the OCR lookup and AI response table with one driver-owned OCR implementation and one reused Vane provider prompter; Ray attaches the OCR Actor and executes AI through `vane.ai.prompt`. Downstream SQL keeps the same parsing, trusted-role filtering, score deviation, reranking, and audit-rule contracts.
 
 ## Audit logic and boundaries
 

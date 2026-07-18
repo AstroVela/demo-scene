@@ -17,7 +17,7 @@
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上执行一次真实 RapidOCR 并把不可变结果暴露给 SQL；Ray 则在隔离的有状态 Actor worker 内初始化原生 ONNX 引擎。
+Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上创建一份 RapidOCR 引擎，对每个合格证明文档 locator 各执行一次，并把不可变结果暴露给 SQL；Ray 则在隔离的有状态 Actor worker 内初始化原生 ONNX 引擎。
 
 ## 架构
 
@@ -55,7 +55,7 @@ stg_claims / stg_claim_materials / stg_run_config
 
 ## 运行 Demo
 
-Demo 从公共 PyPI 安装 Vane（`pip install vane-ai`），并需要正在运行的 PostgreSQL、MinIO 和 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备已验证环境，然后执行：
+本 Demo 要求 CPython 3.12，并固定公共 PyPI 上的 `vane-ai==0.1.0a1`。该版本提供面向 CPython 3.10、3.11 和 3.12 的 `manylinux_2_28_x86_64` wheel（glibc 2.28 或更新），但 Launcher 只接受本 Demo 已验证的 CPython 3.12 运行时。先按照[完整运行手册](docs/runbook.zh-CN.md)创建环境，执行 `python -m pip install vane-ai` 安装 Vane，再执行 `python -m pip install -r requirements.txt` 安装 Demo，并准备正在运行的 PostgreSQL、MinIO 和 Qwen 服务，然后运行：
 
 ```bash
 python scripts/run_demo.py e2e
@@ -75,14 +75,27 @@ verified 4 claim dispositions: CLM-APPROVE=approve_for_payment, CLM-DENY=deny_cl
 
 ## 实现文件组织与 Vane 使用位置
 
+下图包含全部 18 个 SQL 文件。实线表示主执行流，虚线表示跨阶段的其他直接依赖。
+
+![理赔分流 SQL 依赖 DAG](docs/vane-claims-sql-dag.png)
+
+紫色的 `int_claim_photo_ai` 节点不是 SQL 文件：`photo_ai.py` 通过 Vane AI 创建该 Relation，结果随后重新进入 SQL DAG，完成可信身份绑定和 Runner 校验。
+
 ```text
 claims-disposition/
+├── pyproject.toml
+│   # 声明 Python/Runtime 依赖，其中包括公共 PyPI Vane 的精确版本。
+│
+├── requirements.txt
+│   # 根据 pyproject.toml 安装当前源码及 Fast Test Extra。
+│
 ├── runtime.yml
 │   # 配置 Vane Runner（默认 Local）、PostgreSQL、MinIO、OCR 和 Qwen。
 │
 ├── scripts/
 │   └── run_demo.py
-│       # Demo 统一入口；校验 Python、Vane、DuckDB 版本后转交给 CLI。
+│       # 校验 CPython 3.12、Vane/DuckDB 精确标识、必需 API、
+│       # 包来源和 Loopback 网络设置，再转交给 CLI。
 │
 ├── src/claims_disposition_sql_pipeline/
 │   ├── cli.py
@@ -102,22 +115,23 @@ claims-disposition/
 │   │   # 封装 MinIO 对象读取、存在性检查、SHA-256、上传和清理。
 │   │
 │   ├── pipeline.py
-│   │   # 整条 DAG 的主编排器：读取 PostgreSQL、注册 SQL 输入、
-│   │   # 调度材料处理、AI、决策 SQL，并把最终结果交给发布模块。
-│   │   └── 【Vane】通过 vane.configure 选择 Local 或 Ray Runner；
-│   │       将 Local OCR 结果或 Ray OCR Actor 暴露给同一个 SQL 调用；
-│   │       使用 Relation.write_parquet 物化交给 Runner 的 SQL 阶段。
+│   │   # 同时管理 Driver DuckDB Catalog 与独立 Runner Connection，
+│   │   # 通过临时 Parquet 跨越边界，并编排完整 DAG。
+│   │   └── 【Vane】vane.configure 选择 Local 或 Ray；
+│   │       Relation.write_parquet 将每个直接 Runner SQL 投影物化回 Driver Catalog。
+│   │       Local 挂载 Driver 生成的 OCR 查询；Ray 挂载 DocumentOcrActor。
 │   │
 │   ├── vane_udfs.py
-│   │   # 图片质量分析、文档字段提取、材料质量判断和 AI JSON 校验。
-│   │   └── 【Vane】定义无状态 Function，以及在 Local 直接使用、
-│   │       在 Ray 挂载为 document_ocr_json 的 RapidOCR DocumentOcrActor。
+│   │   # 实现 MinIO 探测/Hash、图片质量、OCR 规范化、
+│   │   # 文档合同和严格模型响应校验。
+│   │   └── 【Vane】定义无状态 Function/挂载规格与 @vane.cls
+│   │       DocumentOcrActor；Local 在 Driver 实例化，Ray 将其挂载执行。
 │   │
 │   ├── photo_ai.py
 │   │   # 重新读取并校验照片 Hash，构造损伤分析 Prompt，
 │   │   # 校验请求与响应必须绑定同一个 claim、file 和 SHA-256。
-│   │   └── 【Vane】Local 使用公共 provider API，Ray 使用 vane.ai.prompt，
-│   │       两者保持相同的请求与响应表合同。
+│   │   └── 【Vane】Local 使用 vane.ai.load_provider，并在 Driver 复用一份
+│   │       异步 Prompter；Ray 使用 vane.ai.prompt 和 Runner 物化。
 │   │
 │   ├── sql/
 │   │   ├── staging/
@@ -130,26 +144,38 @@ claims-disposition/
 │   │   │       # 将不含凭据的 OCR、模型和运行参数暴露给 SQL。
 │   │   │
 │   │   ├── intermediate/
-│   │   │   ├── int_claim_material_inputs.sql / int_claim_object_facts.sql
-│   │   │   │   # 用 SQL 表达可信 locator 门控与对象可用性事实。
-│   │   │   ├── int_claim_*_udf.sql
-│   │   │   │   # 直接交给 Runner 的 SQL 投影：MinIO 探测、Hash、图片质量、
-│   │   │   │   # OCR、文档合同和模型响应校验。
+│   │   │   ├── int_claim_material_inputs.sql
+│   │   │   │   # 将材料记录与不含凭据的运行参数组合，并在 Runner 访问前对规范化 locator 做门控。
+│   │   │   ├── int_claim_object_probe_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，只对可信 MinIO locator 调用 minio_object_exists。
+│   │   │   ├── int_claim_object_facts.sql
+│   │   │   │   # 将探测结果左关联回每条材料记录，并把缺少探测结果视为对象不可用。
+│   │   │   ├── int_claim_object_hash_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，为每个可用对象计算作为内容身份的 SHA-256。
+│   │   │   ├── int_claim_photo_quality_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，检查可用 JPEG 损伤照片的可读性、可用性和质量。
+│   │   │   ├── int_claim_document_ocr_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，对每份可用 PNG 证明文档调用 OCR Actor 或 Local Lookup。
+│   │   │   ├── int_claim_document_fields_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，从每个规范化 OCR 响应中提取规则要求的字段。
+│   │   │   ├── int_claim_document_quality_inputs.sql
+│   │   │   │   # 绑定 OCR、提取字段、Claim 身份、必需字段和最低置信度。
+│   │   │   ├── int_claim_document_quality_udf.sql
+│   │   │   │   # 通过直接 Runner SQL 评估绑定后的文档合同，并输出文档可用性结果。
 │   │   │   ├── int_claim_material_facts.sql
-│   │   │   │   # 关联各 UDF 输出，把逐文件事实聚合为一条 Claim 记录。
+│   │   │   │   # 关联所有 UDF 输出，聚合为每个 Claim 一行，并为 AI 构造有序且已验证的照片输入。
 │   │   │   ├── int_claim_damage_validation_inputs.sql
-│   │   │   │   # 把模型响应绑定到可信 claim、file 和 SHA-256 身份。
+│   │   │   │   # 展开已验证照片输入，并把每个 Vane AI 响应绑定到可信 claim、file 和 SHA-256 身份。
+│   │   │   ├── int_claim_damage_validation_udf.sql
+│   │   │   │   # 通过直接 Runner SQL，规范化并严格校验每个不可信的损伤模型响应。
 │   │   │   ├── int_claim_damage_facts.sql
-│   │   │   │   # 将 Runner 校验后的逐照片损伤事实聚合到 Claim 级别，
-│   │   │   │   # 识别结果冲突、不确定性和高严重程度风险。
+│   │   │   │   # 对 Runner 校验后的逐照片结果分类并按 Claim 聚合，同时识别冲突、不确定性和严重程度风险。
 │   │   │   └── int_claim_decision_facts.sql
-│   │   │       # 使用确定性 SQL 生成补充材料、人工复核、
-│   │   │       # 拒赔候选和支付候选，并明确规则优先级。
+│   │   │       # 生成四种确定性分流候选，并应用明确的规则优先级。
 │   │   │
 │   │   └── marts/
 │   │       └── claim_disposition.sql
-│   │           # 生成最终九列输出，包括 disposition、原因、
-│   │           # 下一步动作和 supporting_facts_json。
+│   │           # 将命中的规则映射为最终九列合同，包括 disposition、原因、下一步动作和 supporting_facts_json。
 │   │
 │   ├── output_writer.py
 │   │   # 校验最终输出合同，并在一个事务中替换 PostgreSQL 结果快照。
@@ -164,7 +190,7 @@ claims-disposition/
     # 覆盖配置、Runner 编排、SQL 路径、发布合同和发行包结构。
 ```
 
-执行主线是 `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`。Local 将原生 OCR 和异步 provider client 保留在 Driver，Ray 使用有状态 Actor 与 `vane.ai.prompt`；SQL 阶段和类型化输出保持一致。每个 `*_udf.sql` 节点仍是直接交给 Runner 的 SQL 投影，后续 SQL 节点负责解析、关联、分类和聚合。
+执行主线是 `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`。Driver 读取 PostgreSQL/MinIO、持有纯 SQL DuckDB Catalog 并发布输出。对于每个 `*_udf.sql` 投影，`pipeline.py` 将 Driver 输入临时落为 Parquet，通过所选 Vane Runner 执行投影，再把物化结果注册回 Driver Catalog。Local 使用 Driver 持有的一份 OCR 实现和一份复用的 Vane Provider Prompter，生成 OCR 查询与 AI 响应表；Ray 挂载 OCR Actor，并通过 `vane.ai.prompt` 执行 AI。两条路径保持相同的 SQL 节点和类型化合同。
 
 ## 决策边界
 
