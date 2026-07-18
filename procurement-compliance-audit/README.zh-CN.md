@@ -15,7 +15,7 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 Vane AI API 调用。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上执行一次真实 RapidOCR 并把不可变结果暴露给 SQL；Ray 将 OCR Worker 挂载为有状态表达式，并通过 `vane.ai.prompt` 调用 Qwen。
+Vane 是面向多模态数据的多模计算引擎，让评分表、文档图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。OCR Worker 使用 `@vane.cls` 注册，严格响应校验器使用 `@vane.func` 注册，Qwen 则通过 Vane AI API 调用。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上创建一份 RapidOCR 引擎，对每个可信证据 locator 各执行一次，并把不可变结果暴露给 SQL；Ray 将 OCR Worker 挂载为有状态表达式，并通过 `vane.ai.prompt` 调用 Qwen。
 
 ## 架构
 
@@ -42,7 +42,7 @@ PostgreSQL 项目/供应商/评分/证据元数据 + MinIO 2 张 PNG 图片
 
 ## 运行 Demo
 
-Demo 从公共 PyPI 安装 Vane（`pip install vane-ai`），并需要正在运行的 PostgreSQL、MinIO 和本地 Qwen 服务。先按照[完整运行手册](docs/runbook.zh-CN.md)准备已验证环境，然后执行：
+本 Demo 要求 CPython 3.12，并固定公共 PyPI 上的 `vane-ai==0.1.0a1`。该版本提供面向 CPython 3.10、3.11 和 3.12 的 `manylinux_2_28_x86_64` wheel（glibc 2.28 或更新），但 Launcher 只接受本 Demo 已验证的 CPython 3.12 运行时。先按照[完整运行手册](docs/runbook.zh-CN.md)创建环境，执行 `python -m pip install vane-ai` 安装 Vane，再执行 `python -m pip install -r requirements.txt` 安装 Demo，并准备正在运行的 PostgreSQL、MinIO 和本地 Qwen 服务，然后运行：
 
 ```bash
 python scripts/run_demo.py e2e
@@ -60,14 +60,21 @@ output/audit_summary.jsonl   # 1 行
 ## 实现文件组织与 Vane 使用位置
 
 ```text
-<项目根目录>/
+./
+├── pyproject.toml
+│   # 声明 Python/Runtime 依赖，其中包括公共 PyPI Vane 的精确版本。
+│
+├── requirements.txt
+│   # 根据 pyproject.toml 安装当前源码及 Fast Test Extra。
+│
 ├── runtime.yml
 │   # 配置 Vane Runner（默认 Local）、PostgreSQL、MinIO、OCR、
 │   # Qwen 和 JSONL 输出目录。
 │
 ├── scripts/
 │   └── run_demo.py
-│       # Demo 统一入口；校验 Python、Vane、DuckDB 版本后调用 CLI。
+│       # 校验 CPython 3.12、Vane/DuckDB 精确标识、必需 API、
+│       # 包来源和 Loopback 网络设置，再调用 CLI。
 │
 ├── fixtures/expert-score-anomaly/
 │   ├── project.json
@@ -82,7 +89,8 @@ output/audit_summary.jsonl   # 1 行
 │
 ├── src/procurement_audit_sql_demo/
 │   ├── cli.py
-│   │   # 编排 fixture、run 和 e2e 命令，并展示审计结果和排名变化。
+│   │   # 编排 fixture、run 和 e2e，并展示审计/排名结果，
+│   │   # 以及当前 Runner 实际使用的 Vane 能力。
 │   │
 │   ├── config.py
 │   │   # 读取并严格校验 runtime.yml，生成类型明确的运行配置。
@@ -103,23 +111,22 @@ output/audit_summary.jsonl   # 1 行
 │   │   # 再转换为类型明确的 Arrow SourceBundle。
 │   │
 │   ├── pipeline.py
-│   │   # 整条八节点 DAG 的主编排器：读取来源、执行 OCR 和 AI、
-│   │   # 运行评分 SQL、生成两个 Mart，并发布最终 JSONL。
-│   │   └── 【Vane】通过 vane.configure 选择 Local 或 Ray Runner；
-│   │       将 Local OCR 结果或 Ray OCR Actor 暴露给同一个 SQL 调用，
-│   │       并通过 Relation.write_parquet 物化交给 Runner 的 SQL 阶段。
+│   │   # 同时管理 Driver DuckDB Catalog 与独立 Runner Connection，
+│   │   # 通过临时 Parquet 跨越边界，并执行全部八个核心 Relation。
+│   │   └── 【Vane】vane.configure 选择 Local 或 Ray；
+│   │       Relation.write_parquet 将 OCR/校验投影物化回 Driver Catalog。
+│   │       Local 挂载 Driver 生成的 OCR 查询；Ray 挂载 EvidenceOcrActor。
 │   │
 │   ├── vane_functions.py
-│   │   # OCR 输出规范化和严格的 AI JSON 合同校验。
-│   │   └── 【Vane】validate_audit_fact_json 是无状态 Function；
-│   │       EvidenceOcrActor 在 Local 直接执行，在 Ray 挂载为有状态
-│   │       evidence_ocr_json SQL 表达式。
+│   │   # OCR 输出规范化和严格的 AI JSON/文档类型合同校验。
+│   │   └── 【Vane】@vane.func 定义 validate_audit_fact_json；
+│   │       @vane.cls 定义 EvidenceOcrActor，Local 在 Driver 实例化，Ray 挂载执行。
 │   │
 │   ├── ai.py
 │   │   # 将 OCR 文本、供应商别名和图片组合成多模态请求，
 │   │   # 校验模型事实必须与可信证据角色一致，合同失败时重试一次。
-│   │   └── 【Vane】Local 使用公共 provider API，Ray 使用 vane.ai.prompt，
-│   │       两者保持相同的请求、重试与响应表合同。
+│   │   └── 【Vane】Local 使用 vane.ai.load_provider，并在 Driver 复用一份
+│   │       异步 Prompter；Ray 使用 vane.ai.prompt 和 Runner 物化。
 │   │
 │   ├── sql/
 │   │   ├── staging/
@@ -152,16 +159,16 @@ output/audit_summary.jsonl   # 1 行
 │   │           # 或 insufficient_evidence 项目状态。
 │   │
 │   ├── output_writer.py
-│   │   # 校验 Finding、Summary 和证据引用，然后原子写入两个 JSONL 文件。
+│   │   # 校验 Finding、Summary 和证据引用，再分别原子替换两个 JSONL 快照。
 │   │
 │   └── verify_outputs.py
-│       # 验证合成案例是否稳定产生三条 Finding 和预期的排名变化。
+│       # 发布前验证合成案例是否产生三条 Finding 和预期排名变化。
 │
 └── tests/fast/
     # 覆盖来源合同、OCR Actor、AI 合同、SQL DAG、Runner 编排和输出发布。
 ```
 
-执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → output_writer.py`。Local 将原生 OCR 和异步 provider client 保留在 Driver；Ray 挂载可复用 OCR Actor 并通过 `vane.ai.prompt` 执行 AI。SQL UDF 边界与类型化输出保持一致。每次 UDF 调用都位于清晰可见的 `*_udf.sql` 节点；下游 SQL 负责解析、可信角色过滤、评分偏差、排名变化和审计规则。
+执行主线是 `run_demo.py → cli.py → source_data.py → pipeline.py → Vane OCR/AI/校验 → SQL Relations → verify_outputs.py → output_writer.py`。Driver 读取 PostgreSQL/MinIO、校验 Arrow `SourceBundle`、持有纯 SQL DuckDB Catalog、验证 Fixture 结果并发布 JSONL。对于 OCR 与响应校验的 `*_udf.sql` 投影，`pipeline.py` 将 Driver 输入临时落为 Parquet，通过所选 Vane Runner 执行，再把物化结果注册回 Driver Catalog。Local 使用 Driver 持有的一份 OCR 实现和一份复用的 Vane Provider Prompter，生成 OCR 查询与 AI 响应表；Ray 挂载 OCR Actor，并通过 `vane.ai.prompt` 执行 AI。下游 SQL 保持相同的解析、可信角色过滤、评分偏差、排名变化和审计规则合同。
 
 ## 审计逻辑与边界
 

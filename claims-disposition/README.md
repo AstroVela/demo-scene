@@ -17,7 +17,7 @@ The synthetic fixture covers four workflow outcomes:
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local executes real RapidOCR once on the driver and exposes immutable results to SQL; Ray initializes the native ONNX engine inside an isolated stateful Actor worker.
+Vane is a multi-compute engine for multimodal data: it lets structured records, documents, images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local creates one RapidOCR engine on the driver, processes each eligible supporting-document locator once, and exposes the immutable results to SQL; Ray initializes the native ONNX engine inside an isolated stateful Actor worker.
 
 ## Architecture
 
@@ -55,7 +55,7 @@ stg_claims / stg_claim_materials / stg_run_config
 
 ## Run the demo
 
-The demo installs Vane from public PyPI (`pip install vane-ai`) and requires running PostgreSQL, MinIO, and Qwen services. Follow the [complete runbook](docs/runbook.md) for the validated environment and service setup, then run:
+This demo requires CPython 3.12 and pins the public PyPI release `vane-ai==0.1.0a1`. The release provides CPython 3.10, 3.11, and 3.12 `manylinux_2_28_x86_64` wheels (glibc 2.28 or newer), but the launcher accepts only this demo's validated CPython 3.12 runtime. Follow the [complete runbook](docs/runbook.md) to create the environment, install Vane with `python -m pip install vane-ai`, install the demo with `python -m pip install -r requirements.txt`, and prepare running PostgreSQL, MinIO, and Qwen services. Then run:
 
 ```bash
 python scripts/run_demo.py e2e
@@ -77,12 +77,19 @@ There is no AI mock fallback: unavailable services, unreadable images, invalid A
 
 ```text
 claims-disposition/
+├── pyproject.toml
+│   # Declares Python/runtime dependencies, including the exact public-PyPI Vane pin.
+│
+├── requirements.txt
+│   # Installs this source tree and its fast-test extra from pyproject.toml.
+│
 ├── runtime.yml
 │   # Configures the Vane Runner (Local by default), PostgreSQL, MinIO, OCR, and Qwen.
 │
 ├── scripts/
 │   └── run_demo.py
-│       # Demo entry point; verifies Python, Vane, and DuckDB before invoking the CLI.
+│       # Verifies CPython 3.12, exact Vane/DuckDB identities, required APIs,
+│       # package origins, and loopback networking before invoking the CLI.
 │
 ├── src/claims_disposition_sql_pipeline/
 │   ├── cli.py
@@ -102,22 +109,23 @@ claims-disposition/
 │   │   # Wraps MinIO reads, existence checks, SHA-256, uploads, and cleanup.
 │   │
 │   ├── pipeline.py
-│   │   # Main DAG orchestrator: reads PostgreSQL, registers SQL inputs, schedules
-│   │   # material processing, AI, and decision SQL, then hands results to publication.
-│   │   └── [Vane] Uses vane.configure to select Local or Ray Runner;
-│   │       exposes Local OCR results or a Ray OCR Actor to the same SQL call;
-│   │       uses Relation.write_parquet for Runner-backed SQL stages.
+│   │   # Owns the driver DuckDB catalog and a separate Runner connection, stages
+│   │   # their boundary through temporary Parquet, and orchestrates the complete DAG.
+│   │   └── [Vane] vane.configure selects Local or Ray; Relation.write_parquet
+│   │       materializes each direct Runner SQL projection back into the driver catalog.
+│   │       Local attaches a driver-built OCR lookup; Ray attaches DocumentOcrActor.
 │   │
 │   ├── vane_udfs.py
-│   │   # Implements photo quality, document fields, material quality, and AI JSON checks.
-│   │   └── [Vane] Defines stateless Functions and the reusable RapidOCR
-│   │       DocumentOcrActor used directly on Local or attached on Ray.
+│   │   # Implements MinIO probes/hashes, photo quality, OCR normalization,
+│   │   # document contracts, and strict model-response validation.
+│   │   └── [Vane] Defines stateless Functions/attachment specs and the @vane.cls
+│   │       DocumentOcrActor, instantiated on the Local driver or attached on Ray.
 │   │
 │   ├── photo_ai.py
 │   │   # Re-reads and hashes photos, builds damage prompts, and binds every request
 │   │   # and response to the same claim, file, and SHA-256.
-│   │   └── [Vane] Uses the public provider API on Local and vane.ai.prompt on Ray,
-│   │       while preserving the same request and response table contract.
+│   │   └── [Vane] Local uses vane.ai.load_provider and reuses one async prompter
+│   │       on the driver; Ray uses vane.ai.prompt and Runner materialization.
 │   │
 │   ├── sql/
 │   │   ├── staging/
@@ -164,7 +172,7 @@ claims-disposition/
     # Covers configuration, Runner orchestration, SQL paths, publication, and packaging.
 ```
 
-The execution path is `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`. Vane supplies SQL-callable functions and stateful actors, the switchable execution backend, multimodal provider calls, and Relation materialization. Local keeps native OCR and the async provider client on the driver, while Ray uses the stateful Actor and `vane.ai.prompt`; the SQL stages and typed outputs are identical. Each `*_udf.sql` node remains a direct Runner projection, and the following SQL nodes parse, join, classify, and aggregate its output.
+The execution path is `run_demo.py → cli.py → pipeline.py → Vane Function/Actor/AI → SQL Relations → output_writer.py → verify_outputs.py`. The driver reads PostgreSQL/MinIO, owns the pure-SQL DuckDB catalog, and publishes the output. For every `*_udf.sql` projection, `pipeline.py` stages driver inputs as temporary Parquet, executes the projection through the selected Vane Runner, and registers the materialized result back in the driver catalog. Local builds the OCR lookup and AI response table with one driver-owned OCR implementation and one reused Vane provider prompter; Ray attaches the OCR Actor and executes AI through `vane.ai.prompt`. Both paths preserve the same SQL nodes and typed contracts.
 
 ## Decision boundary
 
