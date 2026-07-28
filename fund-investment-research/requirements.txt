@@ -1,0 +1,3 @@
+# Vane is intentionally absent: this Demo must use the local build under
+# ~/vane. See README.md for the two-step installation command.
+-e .[test]

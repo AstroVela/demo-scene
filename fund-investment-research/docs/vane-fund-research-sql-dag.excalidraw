@@ -1,0 +1,382 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [
+    {
+      "type": "text", "id": "sql_title", "x": 55, "y": 35, "width": 1120, "height": 45,
+      "text": "Signal state SQL DAG — evidence in, workflow state out", "originalText": "Signal state SQL DAG — evidence in, workflow state out",
+      "fontSize": 32, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#1e40af", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400001, "version": 1, "versionNonce": 400002,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "text", "id": "sql_subtitle", "x": 58, "y": 84, "width": 1350, "height": 25,
+      "text": "The VLM extracts facts and proposes impact edges; this DAG alone emits the four final states.", "originalText": "The VLM extracts facts and proposes impact edges; this DAG alone emits the four final states.",
+      "fontSize": 17, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#64748b", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400003, "version": 1, "versionNonce": 400004,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "text", "id": "sql_inputs_label", "x": 65, "y": 145, "width": 350, "height": 30,
+      "text": "1  TYPE-NARROW RELATIONS", "originalText": "1  TYPE-NARROW RELATIONS",
+      "fontSize": 21, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#3b82f6", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400005, "version": 1, "versionNonce": 400006,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "ellipse", "id": "sql_signals", "x": 60, "y": 215, "width": 245, "height": 105,
+      "strokeColor": "#c2410c", "backgroundColor": "#fed7aa", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400007, "version": 1, "versionNonce": 400008,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "sql_signals_text", "x": 91, "y": 239, "width": 183, "height": 58,
+      "text": "incoming_signals\nsignal_id • thesis_id\ncompany_id", "originalText": "incoming_signals\nsignal_id • thesis_id\ncompany_id",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400009, "version": 1, "versionNonce": 400010,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "ellipse", "id": "sql_facts", "x": 60, "y": 370, "width": 245, "height": 135,
+      "strokeColor": "#c2410c", "backgroundColor": "#fed7aa", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400011, "version": 1, "versionNonce": 400012,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "sql_facts_text", "x": 90, "y": 394, "width": 185, "height": 88,
+      "text": "research_facts\nmetric + numeric / text\ntrust_tier\nknowledge_kind", "originalText": "research_facts\nmetric + numeric / text\ntrust_tier\nknowledge_kind",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400013, "version": 1, "versionNonce": 400014,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "ellipse", "id": "sql_conditions", "x": 60, "y": 555, "width": 245, "height": 120,
+      "strokeColor": "#c2410c", "backgroundColor": "#fed7aa", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400015, "version": 1, "versionNonce": 400016,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "sql_conditions_text", "x": 84, "y": 578, "width": 197, "height": 74,
+      "text": "thesis_conditions\nmetric + gte / lte\nthreshold_numeric", "originalText": "thesis_conditions\nmetric + gte / lte\nthreshold_numeric",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400017, "version": 1, "versionNonce": 400018,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_join", "x": 430, "y": 345, "width": 310, "height": 170,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#93c5fd", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400019, "version": 1, "versionNonce": 400020,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_join_text", "x": 462, "y": 376, "width": 246, "height": 110,
+      "text": "signal_source_facts\nLEFT JOIN by signal_id\nkeeps signals with zero facts\nidentity stays PostgreSQL-bound", "originalText": "signal_source_facts\nLEFT JOIN by signal_id\nkeeps signals with zero facts\nidentity stays PostgreSQL-bound",
+      "fontSize": 17, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400021, "version": 1, "versionNonce": 400022,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "arrow", "id": "sql_signals_join", "x": 305, "y": 270, "width": 125, "height": 110,
+      "strokeColor": "#c2410c", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400023, "version": 1, "versionNonce": 400024,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [125, 110]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_facts_join", "x": 305, "y": 435, "width": 125, "height": 0,
+      "strokeColor": "#c2410c", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400025, "version": 1, "versionNonce": 400026,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [125, 0]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_conditions_numeric", "x": 305, "y": 615, "width": 530, "height": -180,
+      "strokeColor": "#c2410c", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "dashed", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 400027, "version": 1, "versionNonce": 400028,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [180, 0], [360, -180], [530, -180]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "text", "id": "sql_rules_label", "x": 830, "y": 145, "width": 390, "height": 30,
+      "text": "2  THREE INDEPENDENT CHECKS", "originalText": "2  THREE INDEPENDENT CHECKS",
+      "fontSize": 21, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#3b82f6", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500001, "version": 1, "versionNonce": 500002,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_trust", "x": 835, "y": 210, "width": 315, "height": 120,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#60a5fa", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500003, "version": 1, "versionNonce": 500004,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_trust_text", "x": 868, "y": 237, "width": 249, "height": 68,
+      "text": "trusted_counts\ntrust_tier ≤ 2 + source_fact\nelse low_trust_fact_count", "originalText": "trusted_counts\ntrust_tier ≤ 2 + source_fact\nelse low_trust_fact_count",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500005, "version": 1, "versionNonce": 500006,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_numeric", "x": 835, "y": 375, "width": 315, "height": 120,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#60a5fa", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500007, "version": 1, "versionNonce": 500008,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_numeric_text", "x": 865, "y": 398, "width": 255, "height": 74,
+      "text": "numeric_condition_eval\nORR / TRAE / RUNWAY\nSUM(CASE): violation vs support", "originalText": "numeric_condition_eval\nORR / TRAE / RUNWAY\nSUM(CASE): violation vs support",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500009, "version": 1, "versionNonce": 500010,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_conflict", "x": 835, "y": 540, "width": 315, "height": 120,
+      "strokeColor": "#dc2626", "backgroundColor": "#fee2e2", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500011, "version": 1, "versionNonce": 500012,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_conflict_text", "x": 865, "y": 563, "width": 255, "height": 74,
+      "text": "regulatory_conflicts\nCOUNT(DISTINCT trusted BLA_STATUS)\n> 1 means human reconciliation", "originalText": "regulatory_conflicts\nCOUNT(DISTINCT trusted BLA_STATUS)\n> 1 means human reconciliation",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500013, "version": 1, "versionNonce": 500014,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "arrow", "id": "sql_join_trust", "x": 740, "y": 397, "width": 95, "height": -127,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500015, "version": 1, "versionNonce": 500016,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [95, -127]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_join_numeric", "x": 740, "y": 435, "width": 95, "height": 0,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500017, "version": 1, "versionNonce": 500018,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [95, 0]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_join_conflict", "x": 740, "y": 472, "width": 95, "height": 128,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 500019, "version": 1, "versionNonce": 500020,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [95, 128]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "text", "id": "sql_decision_label", "x": 1255, "y": 145, "width": 650, "height": 30,
+      "text": "3  CONVERGE FLAGS → EXPLICIT PRECEDENCE", "originalText": "3  CONVERGE FLAGS → EXPLICIT PRECEDENCE",
+      "fontSize": 21, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#3b82f6", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600001, "version": 1, "versionNonce": 600002,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_flags", "x": 1270, "y": 345, "width": 300, "height": 185,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#3b82f6", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600003, "version": 1, "versionNonce": 600004,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_flags_text", "x": 1301, "y": 375, "width": 238, "height": 125,
+      "text": "flags\ntrusted_fact_count\nlow_trust_fact_count\nviolation_count\nsupport_count\nregulatory_status_count", "originalText": "flags\ntrusted_fact_count\nlow_trust_fact_count\nviolation_count\nsupport_count\nregulatory_status_count",
+      "fontSize": 17, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#ffffff", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600005, "version": 1, "versionNonce": 600006,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "diamond", "id": "sql_case", "x": 1710, "y": 320, "width": 310, "height": 240,
+      "strokeColor": "#b45309", "backgroundColor": "#fef3c7", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600007, "version": 1, "versionNonce": 600008,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "sql_case_text", "x": 1774, "y": 375, "width": 182, "height": 135,
+      "text": "CASE PRIORITY\n1 no trusted fact\n2 trusted conflict\n3 numeric violation\n4 numeric support\nelse manual review", "originalText": "CASE PRIORITY\n1 no trusted fact\n2 trusted conflict\n3 numeric violation\n4 numeric support\nelse manual review",
+      "fontSize": 16, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600009, "version": 1, "versionNonce": 600010,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "ellipse", "id": "sql_states", "x": 2180, "y": 285, "width": 400, "height": 310,
+      "strokeColor": "#047857", "backgroundColor": "#a7f3d0", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600011, "version": 1, "versionNonce": 600012,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false
+    },
+    {
+      "type": "text", "id": "sql_states_text", "x": 2229, "y": 337, "width": 302, "height": 215,
+      "text": "research_signals\n\nthesis_review_required\nthesis_supported\nmanual_review\ninsufficient_evidence\n\ndecision_source:\ndeterministic_sql", "originalText": "research_signals\n\nthesis_review_required\nthesis_supported\nmanual_review\ninsufficient_evidence\n\ndecision_source:\ndeterministic_sql",
+      "fontSize": 18, "fontFamily": 3, "textAlign": "center", "verticalAlign": "middle",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600013, "version": 1, "versionNonce": 600014,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "arrow", "id": "sql_trust_flags", "x": 1150, "y": 270, "width": 120, "height": 128,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600015, "version": 1, "versionNonce": 600016,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [120, 128]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_numeric_flags", "x": 1150, "y": 435, "width": 120, "height": 0,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600017, "version": 1, "versionNonce": 600018,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [120, 0]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_conflict_flags", "x": 1150, "y": 600, "width": 120, "height": -128,
+      "strokeColor": "#dc2626", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600019, "version": 1, "versionNonce": 600020,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [120, -128]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_flags_case", "x": 1570, "y": 438, "width": 140, "height": 0,
+      "strokeColor": "#1e3a5f", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600021, "version": 1, "versionNonce": 600022,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [140, 0]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "arrow", "id": "sql_case_states", "x": 2020, "y": 440, "width": 160, "height": 0,
+      "strokeColor": "#b45309", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 3, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600023, "version": 1, "versionNonce": 600024,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null, "locked": false,
+      "points": [[0, 0], [160, 0]], "startBinding": null, "endBinding": null,
+      "startArrowhead": null, "endArrowhead": "arrow"
+    },
+    {
+      "type": "text", "id": "sql_evidence_label", "x": 65, "y": 750, "width": 500, "height": 30,
+      "text": "4  ACTUAL SQL CONTRACT", "originalText": "4  ACTUAL SQL CONTRACT",
+      "fontSize": 21, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#3b82f6", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600025, "version": 1, "versionNonce": 600026,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_code", "x": 65, "y": 815, "width": 1540, "height": 270,
+      "strokeColor": "#1e3a5f", "backgroundColor": "#1e293b", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600027, "version": 1, "versionNonce": 600028,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_code_text", "x": 96, "y": 842, "width": 1475, "height": 215,
+      "text": "CASE\n  WHEN trusted_fact_count = 0\n    THEN 'insufficient_evidence'\n  WHEN trusted_regulatory_status_count > 1\n    THEN 'manual_review'\n  WHEN violation_count > 0\n    THEN 'thesis_review_required'\n  WHEN support_count > 0\n    THEN 'thesis_supported'\n  ELSE 'manual_review'\nEND AS state", "originalText": "CASE\n  WHEN trusted_fact_count = 0\n    THEN 'insufficient_evidence'\n  WHEN trusted_regulatory_status_count > 1\n    THEN 'manual_review'\n  WHEN violation_count > 0\n    THEN 'thesis_review_required'\n  WHEN support_count > 0\n    THEN 'thesis_supported'\n  ELSE 'manual_review'\nEND AS state",
+      "fontSize": 17, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#22c55e", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600029, "version": 1, "versionNonce": 600030,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    },
+    {
+      "type": "rectangle", "id": "sql_result_evidence", "x": 1730, "y": 815, "width": 850, "height": 270,
+      "strokeColor": "#047857", "backgroundColor": "#a7f3d0", "fillStyle": "solid",
+      "strokeWidth": 2, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600031, "version": 1, "versionNonce": 600032,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "roundness": {"type": 3}
+    },
+    {
+      "type": "text", "id": "sql_result_evidence_text", "x": 1765, "y": 850, "width": 780, "height": 200,
+      "text": "WHY THIS MATTERS\n\n• model text cannot overwrite signal state\n• low-trust rumor has trusted_fact_count = 0\n• two trusted BLA values force manual review\n• 29% ORR and 43% TRAE violate typed thresholds\n• every reason and next_action is a SQL projection", "originalText": "WHY THIS MATTERS\n\n• model text cannot overwrite signal state\n• low-trust rumor has trusted_fact_count = 0\n• two trusted BLA values force manual review\n• 29% ORR and 43% TRAE violate typed thresholds\n• every reason and next_action is a SQL projection",
+      "fontSize": 18, "fontFamily": 3, "textAlign": "left", "verticalAlign": "top",
+      "strokeColor": "#374151", "backgroundColor": "transparent", "fillStyle": "solid",
+      "strokeWidth": 1, "strokeStyle": "solid", "roughness": 0, "opacity": 100,
+      "angle": 0, "seed": 600033, "version": 1, "versionNonce": 600034,
+      "isDeleted": false, "groupIds": [], "boundElements": null, "link": null,
+      "locked": false, "containerId": null, "lineHeight": 1.25
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": 20
+  },
+  "files": {}
+}

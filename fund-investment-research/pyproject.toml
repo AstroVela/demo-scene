@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fund-investment-research-demo"
+version = "0.1.0"
+description = "Auditable multimodal fund-investment-research demo built on Vane Ray Runner"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "httpx[socks]>=0.28,<0.29",
+  "minio>=7.2,<8",
+  "onnxruntime>=1.28,<2",
+  "openai>=2.48,<3",
+  "pillow>=12,<13",
+  "psycopg[binary]>=3.3,<4",
+  "pyarrow>=25,<26",
+  "pyttsx3>=2.99,<3",
+  "pyyaml>=6,<7",
+  "rapidocr>=3.9,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9,<10"]
+
+[project.scripts]
+fund-research-demo = "fund_investment_research.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fund_investment_research = ["sql/*.sql"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests/fast"]
+addopts = "-q"

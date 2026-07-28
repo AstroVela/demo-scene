@@ -10,6 +10,8 @@ This repository showcases reproducible use cases built with [Vane](https://githu
 
 ### AI / Data Pipelines
 
+* **[Auditable Multimodal Fund Research with Vane](fund-investment-research)** — Turns synthetic meeting audio, research PDFs, a chat screenshot, and approved thesis conditions into source-bound facts, evidence impact hypotheses, deterministic workflow states, and focused analyst tasks through a Ray-only pipeline. **Choose this when** you need research-signal monitoring with explicit trust boundaries, glossary rollout, and changed/failed-stage recovery rather than an investment chatbot.
+
 * **[Auditable Multimodal Claims Triage with Vane](claims-disposition)** — Turns PostgreSQL claim records and MinIO photos and documents into reviewable workflow recommendations using stateful OCR, multimodal fact extraction, and deterministic SQL rules. **Choose this when** you need an end-to-end claims triage workflow with explicit approve, deny, request-more-materials, and manual-review paths.
 
 * **[Procurement Conflict-of-Interest and Scoring Anomaly Audit with Vane](procurement-compliance-audit)** — Reconciles supplier score tables with recommendation and committee evidence extracted from images, then recalculates rankings and produces deterministic audit findings. **Choose this when** you need to combine documentary evidence with numeric scoring to surface explainable compliance review signals.

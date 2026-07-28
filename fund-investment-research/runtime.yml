@@ -1,0 +1,56 @@
+version: 1
+runner: ray
+output_dir: output
+
+ray:
+  address:
+
+postgres:
+  dsn: postgresql://vane_insight:vane_insight_dev_password@127.0.0.1:5432/vane_insight
+  raw_schema: fund_research_raw
+  work_schema: fund_research_work
+
+minio:
+  endpoint: 127.0.0.1:9000
+  access_key: vaneinsight
+  secret_key: vaneinsight_dev_password
+  secure: false
+  bucket: fund-investment-research-fixtures
+
+asr:
+  backend: openai_compatible_whisper
+  base_url: http://127.0.0.1:8002/v1
+  health_url: http://127.0.0.1:8002/health
+  model: whisper-small
+  language: en
+  timeout_seconds: 180.0
+  batch_size: 1
+
+ocr:
+  backend: rapidocr
+  minimum_confidence: 0.55
+  batch_size: 1
+
+ai:
+  provider: openai
+  base_url: http://127.0.0.1:8001/v1
+  health_url: http://127.0.0.1:8001/health
+  api_key: dummy
+  model: Qwen2.5-VL-3B-Instruct
+  concurrency: 1
+  timeout_seconds: 180.0
+  temperature: 0.0
+  max_tokens: 1400
+
+trust:
+  maximum_automatic_tier: 2
+
+versions:
+  pipeline: fund-research-v1
+  source_gate: source-gate-v1
+  asr: whisper-service-v1
+  correction: glossary-correction-v1
+  ocr: rapidocr-v2
+  ai_extract: qwen-vlm-facts-v2
+  rules: thesis-rules-v1
+  output_schema: output-contract-v1
