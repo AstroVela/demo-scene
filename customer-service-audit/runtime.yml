@@ -1,0 +1,35 @@
+version: 1
+# Switch between Local and Ray without changing the relation pipeline.
+runner: local
+
+# MinIO stores the synthetic call recordings and receives the analysis JSON.
+minio:
+  endpoint: 127.0.0.1:9000
+  access_key: vaneinsight
+  secret_key: vaneinsight_dev_password
+  secure: false
+  bucket: customer-service-audit-fixtures
+  recordings_prefix: recordings/
+  analysis_prefix: analysis/
+
+# faster-whisper transcribes each recording on CPU (deterministic, int8).
+asr:
+  engine: faster-whisper
+  model: small
+  device: cpu
+  compute_type: int8
+  language: zh
+  beam_size: 5
+  min_text_chars: 8
+
+# The OpenAI-compatible endpoint extracts call metrics from transcripts.
+ai:
+  provider: openai
+  base_url: http://127.0.0.1:8001/v1
+  health_url: http://127.0.0.1:8001/health
+  api_key: dummy
+  model: Qwen2.5-VL-3B-Instruct
+  concurrency: 1
+  timeout_seconds: 120.0
+  temperature: 0.0
+  max_tokens: 1024
