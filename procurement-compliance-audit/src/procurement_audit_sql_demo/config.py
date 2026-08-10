@@ -173,23 +173,18 @@ def _project_path(config_path: Path, value: Mapping[str, Any], key: str) -> Path
     return resolved
 
 
-def _loopback_http_url(value: Mapping[str, Any], key: str) -> str:
+def _http_url(value: Mapping[str, Any], key: str) -> str:
     text = _string(value, key, "ai")
     try:
         parsed = urlsplit(text)
-        hostname = parsed.hostname
-        port = parsed.port
     except ValueError as exc:
-        raise ConfigError(f"ai.{key} must be a loopback HTTP URL") from exc
+        raise ConfigError(f"ai.{key} must be a valid HTTP(S) URL") from exc
     if (
-        parsed.scheme != "http"
-        or hostname not in {"127.0.0.1", "localhost"}
-        or port is None
-        or parsed.username is not None
-        or parsed.password is not None
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
         or parsed.fragment
     ):
-        raise ConfigError(f"ai.{key} must be a loopback HTTP URL")
+        raise ConfigError(f"ai.{key} must be a valid HTTP(S) URL")
     return text
 
 
@@ -288,8 +283,8 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
         raise ConfigError("ai.provider must be openai")
     ai = AiConfig(
         provider=provider,
-        base_url=_loopback_http_url(ai_value, "base_url"),
-        health_url=_loopback_http_url(ai_value, "health_url"),
+        base_url=_http_url(ai_value, "base_url"),
+        health_url=_http_url(ai_value, "health_url"),
         api_key=_string(ai_value, "api_key", "ai"),
         model=_string(ai_value, "model", "ai"),
         concurrency=_positive_integer(ai_value, "concurrency", "ai"),
