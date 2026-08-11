@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import json
+import os
 from typing import Any
 import urllib.request
 
@@ -96,7 +97,13 @@ Immutable audit rules:
 3. Base every finding on the supplied transcript only. Never invent facts.
 4. problem_category classifies the customer's primary issue.
 5. customer_sentiment reflects the customer's dominant emotional tone, and
-   sentiment_score maps it onto -1 (furious) through 1 (delighted).
+   sentiment_score maps it onto -1 (furious) through 1 (delighted). Use
+   very_negative only for explicit intense anger, hostility, or severe distress;
+   use negative for ordinary dissatisfaction or frustration; use neutral when
+   there is no dominant valence; use positive for ordinary approval; and use
+   very_positive for explicit emphatic praise, strong gratitude, delight, or
+   stated intent to keep supporting the company. Keep the label consistent
+   with the numeric score.
 6. urgency reflects how quickly the business must act, not how loud the
    customer sounds.
 7. requires_followup=true whenever the issue is unresolved, escalated, or the
@@ -118,6 +125,13 @@ class CallAiRequest:
 
 class CallAiInputError(ValueError):
     """Raised when transcript facts cannot form a trustworthy AI request."""
+
+
+def configure_provider_credentials(config: AiConfig) -> None:
+    """Configure driver credentials before any local Ray workers start."""
+
+    if config.provider == "openai":
+        os.environ["OPENAI_API_KEY"] = config.api_key
 
 
 def build_analysis_prompt(transcript_text: str, audio_facts: Mapping[str, Any]) -> str:
@@ -263,18 +277,18 @@ def _prompt_locally(
 ) -> list[tuple[CallAiRequest, str]]:
     """Use Vane's provider API without LocalRunner's subprocess actor boundary."""
 
-    provider = vane.ai.load_provider(
-        config.provider,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        timeout=config.timeout_seconds,
-    )
+    configure_provider_credentials(config)
+    provider = vane.ai.load_provider(config.provider)
     prompter = provider.get_prompter(
         model=config.model,
         system_message=ANALYSIS_SYSTEM_MESSAGE,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        on_error="raise",
+        options={
+            "base_url": config.base_url,
+            "timeout": config.timeout_seconds,
+            "use_chat_completions": True,
+            "temperature": config.temperature,
+            "max_output_tokens": config.max_tokens,
+        },
     ).instantiate()
     completed: list[tuple[CallAiRequest, str]] = []
     # Reuse one event loop because the provider owns one async HTTP client.
@@ -319,23 +333,10 @@ def build_call_ai_relation(
             else result_factory(table)
         )
 
-    provider_options = vane.ai.OpenAIProviderOptions(
-        base_url=config.ai.base_url,
-        api_key=config.ai.api_key,
-        timeout=config.ai.timeout_seconds,
-        concurrency=config.ai.concurrency,
-        max_api_concurrency=config.ai.concurrency,
-    )
-    prompt_options = vane.ai.OpenAIPromptOptions(
-        temperature=config.ai.temperature,
-        max_tokens=config.ai.max_tokens,
-        on_error="raise",
-    )
-
     completed: list[tuple[CallAiRequest, str]] = []
     for request_index, request in enumerate(requests):
-        # Vane prompt output is output-only, and actor evaluation order is not a
-        # stable relation row order. One-row calls bind audit metadata directly.
+        # Actor evaluation order is not a stable relation row order. One-row
+        # calls bind audit metadata directly.
         request_table = _request_to_arrow(request)
         relation = (
             session.from_arrow(request_table)
@@ -344,20 +345,26 @@ def build_call_ai_relation(
         )
         result = vane.ai.prompt(
             relation,
-            "prompt_text",
-            provider="openai",
+            vane.col("prompt_text"),
+            provider=config.ai.provider,
             model=config.ai.model,
-            provider_options=provider_options,
-            prompt_options=prompt_options,
             system_message=ANALYSIS_SYSTEM_MESSAGE,
             output_column="raw_analysis_response",
-            num_gpus=0,
+            on_error="raise",
+            base_url=config.ai.base_url,
+            timeout=config.ai.timeout_seconds,
+            use_chat_completions=True,
+            temperature=config.ai.temperature,
+            max_output_tokens=config.ai.max_tokens,
+            max_concurrency_per_actor=config.ai.concurrency,
         )
+        # Relation Prompt preserves request columns and appends its output.
+        response_relation = result.select(vane.col("raw_analysis_response"))
         # Materialize through Relation.write_parquet when a Runner is configured.
         if response_materializer is None:
-            response_rows = result.fetchall()
+            response_rows = response_relation.fetchall()
         else:
-            response_table = response_materializer(result)
+            response_table = response_materializer(response_relation)
             if response_table.num_columns != 1:
                 raise CallAiInputError(
                     f"AI response row {request_index} must contain exactly one column"

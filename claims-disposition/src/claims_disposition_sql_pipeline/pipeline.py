@@ -10,7 +10,6 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
@@ -19,7 +18,7 @@ from .config import DEFAULT_CONFIG_PATH, RuntimeConfig, load_runtime_config
 from .minio_store import MinioStore
 from .output_writer import replace_output_rows
 from .pg import connect_postgres, probe_postgres, read_claim_rows
-from .photo_ai import build_photo_ai_relation
+from .photo_ai import build_photo_ai_relation, configure_provider_credentials
 from .vane_udfs import (
     DocumentOcrActor,
     build_minio_udfs,
@@ -228,7 +227,7 @@ def attach_local_document_ocr_lookup(
 ) -> None:
     """Run native OCR on the driver and expose its immutable results as a task UDF."""
 
-    locators = driver_connection.sql(
+    locators = driver_connection.execute(
         "select distinct cast(bucket as varchar), cast(object_key as varchar) "
         "from int_claim_object_facts "
         "where object_exists "
@@ -278,7 +277,7 @@ def _execute_runner_sql_file(
 
     for source_name in source_relations:
         name = _safe_identifier(source_name)
-        table = connection.sql(f"select * from {name}").to_arrow_table()
+        table = connection.execute(f"select * from {name}").to_arrow_table()
         workspace.relation_from_table(
             runner_connection,
             name,
@@ -307,9 +306,10 @@ def _relation_rows(
     connection: Any,
     relation_name: str,
 ) -> list[dict[str, Any]]:
-    relation = connection.sql(f"select * from {_safe_identifier(relation_name)}")
-    columns = list(relation.columns)
-    return [dict(zip(columns, row)) for row in relation.fetchall()]
+    table = connection.execute(
+        f"select * from {_safe_identifier(relation_name)}"
+    ).to_arrow_table()
+    return table.to_pylist()
 
 
 def _create_photo_ai_table(
@@ -345,10 +345,14 @@ def run_pipeline(
 ) -> int:
     """Execute the complete DAG and atomically publish its validated mart."""
 
+    configure_provider_credentials(config.ai)
     # The configured backend changes execution only; the relation code is shared.
     vane.configure(runner=config.runner)
     # Fail before computation if either PostgreSQL or MinIO is unavailable.
     probe_runtime(config)
+    # Start Ray before driver connections and attached UDFs enlarge the process.
+    # Provider credentials must already be present so local workers inherit them.
+    vane.get_or_create_runner()
     run_started_at = datetime.now(timezone.utc)
     claim_rows = read_claim_rows_with_json(config)
 
@@ -356,8 +360,8 @@ def run_pipeline(
         prefix=f"claims-disposition-{config.runner}-"
     ) as workspace_root:
         workspace = RunnerWorkspace(Path(workspace_root))
-        connection = duckdb.connect()
-        runner_connection = duckdb.connect()
+        connection = vane.connect()
+        runner_connection = vane.connect()
         try:
             # Register the PostgreSQL snapshot and secret-free run settings.
             register_or_replace_table(
@@ -439,7 +443,7 @@ def run_pipeline(
             _execute_sql_file(connection, DAMAGE_FACT_STAGE)
             for sql_path in SQL_FINAL_STAGES:
                 _execute_sql_file(connection, sql_path)
-            rows = connection.sql(
+            rows = connection.execute(
                 "select * from claim_disposition order by claim_id"
             ).to_arrow_table().to_pylist()
         finally:

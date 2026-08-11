@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import vane
 
 from procurement_audit_sql_demo import pipeline
 from procurement_audit_sql_demo.ai import EvidenceAiInputError, build_evidence_ai_relation
@@ -18,6 +20,54 @@ from procurement_audit_sql_demo.vane_functions import stable_json, validate_audi
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_DIR = PROJECT_ROOT / "fixtures/expert-score-anomaly"
+
+
+def test_pipeline_sets_openai_key_before_runner_initialization(monkeypatch):
+    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    worker_environment = {}
+
+    class WorkerPrewarmed(RuntimeError):
+        pass
+
+    configured_runners = []
+
+    def initialize_runner():
+        worker_environment["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+        raise WorkerPrewarmed
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(WorkerPrewarmed):
+        run_pipeline(
+            config,
+            configure_runner=lambda *, runner: configured_runners.append(runner),
+            initialize_runner=initialize_runner,
+            runtime_probe=lambda _config: None,
+        )
+
+    assert configured_runners == [config.runner]
+    assert worker_environment == {"OPENAI_API_KEY": config.ai.api_key}
+
+
+def test_driver_catalog_rows_use_execute_instead_of_runner_relations():
+    expected = pa.table({"file_id": ["EVD-001"], "status": ["ready"]})
+
+    class DriverConnection:
+        def execute(self, query):
+            assert query == "select * from driver_only_evidence order by file_id"
+            return self
+
+        def to_arrow_table(self):
+            return expected
+
+        def sql(self, _query):
+            raise AssertionError("Driver catalog read used the Runner Relation API")
+
+    assert pipeline._relation_rows(
+        DriverConnection(),
+        "driver_only_evidence",
+        order_by="file_id",
+    ) == expected.to_pylist()
 
 
 def test_materialize_relation_uses_runner_backed_relation_write():
@@ -134,7 +184,6 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
         output_dir=tmp_path / "output",
     )
     events = []
-    ocr_calls = []
     source, _store = _source_and_store()
 
     def configure_runner(*, runner):
@@ -143,8 +192,7 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
     def attach_functions(connection, _config, _local_ocr_results):
         events.append("attach_functions")
 
-        def evidence_ocr(_bucket, object_key):
-            ocr_calls.append(object_key)
+        def evidence_ocr(_bucket, _object_key):
             return stable_json(
                 {
                     "status": "success",
@@ -155,17 +203,19 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
                 }
             )
 
-        connection.create_function(
-            "evidence_ocr_json",
+        vane.attach_function(
             evidence_ocr,
-            ["VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="evidence_ocr_json",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
-        connection.create_function(
-            "validate_audit_fact_json",
+        vane.attach_function(
             validate_audit_fact_json,
-            ["VARCHAR"],
-            "VARCHAR",
+            alias="validate_audit_fact_json",
+            connection=connection,
+            parameters=["VARCHAR"],
+            return_dtype="VARCHAR",
         )
 
     def build_ai(
@@ -178,11 +228,16 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
         events.append(f"ai:{len(ocr_rows)}")
         assert runtime_config is config
         assert {row["file_id"] for row in ocr_rows} == {"EVD-REC-001", "EVD-MIN-001"}
+        assert {row["ocr_status"] for row in ocr_rows} == {"success"}
+        assert {row["ocr_text"] for row in ocr_rows} == {"fixture OCR text"}
+        assert {row["ocr_confidence"] for row in ocr_rows} == {0.95}
+        assert {row["ocr_text_line_count"] for row in ocr_rows} == {1}
         return _fixed_ai_table()
 
     result = run_pipeline(
         config,
         configure_runner=configure_runner,
+        initialize_runner=lambda: events.append("initialize_runner"),
         runtime_probe=lambda _config: None,
         runtime_function_attacher=attach_functions,
         ai_relation_builder=build_ai,
@@ -191,9 +246,12 @@ def test_pipeline_runs_eight_relations_and_publishes(tmp_path):
         relation_materializer=lambda relation: relation.to_arrow_table(),
     )
 
-    assert events == ["configure:local", "attach_functions", "ai:2"]
-    assert len(ocr_calls) == 2
-    assert all(object_key.endswith(".png") for object_key in ocr_calls)
+    assert events == [
+        "configure:ray",
+        "initialize_runner",
+        "attach_functions",
+        "ai:2",
+    ]
     assert result.executed_relations == CORE_RELATIONS
     assert result.finding_count == 3
     assert result.summary_count == 1
@@ -239,17 +297,19 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
                 }
             )
 
-        connection.create_function(
-            "evidence_ocr_json",
+        vane.attach_function(
             evidence_ocr,
-            ["VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="evidence_ocr_json",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
-        connection.create_function(
-            "validate_audit_fact_json",
+        vane.attach_function(
             validate_audit_fact_json,
-            ["VARCHAR"],
-            "VARCHAR",
+            alias="validate_audit_fact_json",
+            connection=connection,
+            parameters=["VARCHAR"],
+            return_dtype="VARCHAR",
         )
 
     def build_ai(
@@ -272,6 +332,7 @@ def test_pipeline_does_not_publish_when_ocr_coverage_is_incomplete(
         run_pipeline(
             config,
             configure_runner=lambda **_kwargs: None,
+            initialize_runner=lambda: None,
             runtime_probe=lambda _config: None,
             runtime_function_attacher=attach_functions,
             ai_relation_builder=build_ai,

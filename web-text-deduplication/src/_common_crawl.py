@@ -15,8 +15,8 @@ from typing import Any, Iterable, Iterator
 from urllib.parse import urlsplit
 
 import pyarrow as pa
-from duckdb.datasource import DataSource, DataSourceTask, read_datasource
 from selectolax.parser import HTMLParser
+from vane.datasource import DataSource, DataSourceTask, read_datasource
 from warcio.archiveiterator import ArchiveIterator
 
 

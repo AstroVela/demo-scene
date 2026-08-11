@@ -10,11 +10,11 @@
 | --- | --- |
 | 操作系统 | Ubuntu 24.04 x86_64，glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0a1` |
+| Vane | `vane-ai[openai]==0.1.0` |
 | MinIO | `127.0.0.1:9000` |
 | 模型服务 | Qwen（OpenAI 兼容），位于 `127.0.0.1:8001` |
 
-经验证的 Vane 发行版已发布到公开 PyPI，提供 CPython 3.10、3.11、3.12 的 x86_64 Linux wheel，均标记 `manylinux_2_28`（glibc 2.28 及以上）。本演示的启动器仅接受 CPython 3.12。由于没有对应的原生 Vane wheel，不支持 Windows 和 macOS。
+已验证的 Vane wheel 及其依赖均从 PyPI 安装。本演示的启动器仅接受 CPython 3.12，已验证环境为 x86_64 Linux。
 
 安装项目侧的 Ubuntu 工具：
 
@@ -22,6 +22,8 @@
 sudo apt update
 sudo apt install -y git curl python3.12 python3.12-venv
 ```
+
+按照 uv 官方安装说明安装 uv，并确认 `uv --version` 可以正常执行。
 
 MinIO 与 Qwen 服务是外部依赖。启动器只连接它们，不负责安装、启动、停止或重启。
 
@@ -33,40 +35,40 @@ MinIO 与 Qwen 服务是外部依赖。启动器只连接它们，不负责安�
 
 ```bash
 cd customer-service-audit
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 ```
 
-### 2. 从公开 PyPI 安装 Vane
+### 2. 从 PyPI 安装 Vane
 
 ```bash
-python -m pip install vane-ai
+uv pip install 'vane-ai[openai]==0.1.0'
 ```
 
-`pyproject.toml` 固定了已验证的 `vane-ai==0.1.0a1` 运行时，启动器会拒绝未经验证的 Vane 构建。
+PyPI 提供精确的 Vane wheel 及其依赖。启动器会拒绝其他 Vane build。
 
 ### 3. 安装演示
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pip check
+uv pip install -r requirements.txt
+uv pip check
 ```
 
 `requirements.txt` 以可编辑模式安装本源码树及其测试附加项。`pyproject.toml` 是权威来源：
 
 | 依赖 | 用途 |
 | --- | --- |
-| `vane-ai==0.1.0a1` | Vane API、定制 DuckDB 与 worker |
+| `vane-ai[openai]==0.1.0` | Vane API、引擎、AI provider 与 worker |
 | `openai==2.45.0` | OpenAI 兼容的 Qwen 客户端 |
 | `minio` | 对象读写与 SHA-256 UDF |
 | `faster-whisper` | CPU ASR：Local 由 driver 持有，Ray 为有状态 Actor |
 | `pyarrow` | Relation/Python 数据边界 |
 | `pyyaml` | 严格加载 `runtime.yml` |
 | `pytz` | 稳定时间戳 |
+| `socksio==1.0.0` | 首次下载 Whisper 模型时提供 SOCKS proxy 支持 |
 | `pytest` | 快速测试 |
 
-`pip check` 必须以 `No broken requirements found` 结束。
+`uv pip check` 不得报告缺失或不兼容的依赖。
 
 ## 准备外部服务
 
@@ -120,18 +122,25 @@ python scripts/run_demo.py e2e       # 依次执行 fixture + run + verify
 
 ## Runner 模式
 
+签入的 `runtime.yml` 默认使用 `runner: ray`。该路径已在本地 Ray runtime 上结合 MinIO、真实 faster-whisper ASR 引擎和本地 Qwen 服务完成端到端验证。
+
 `runner: local`
-: 一个由 driver 持有的 faster-whisper 引擎；每个可用的 `(bucket, object_key)` 定位符在 driver 上转写一次，不可变结果作为查找 UDF 挂载到 SQL。适合首次验证。
+: 一个由 driver 持有的 faster-whisper 引擎；每个可用的 `(bucket, object_key)` 定位符在 driver 上转写一次，不可变结果作为查找 UDF 挂载到 SQL。仅在明确需要 Driver 执行时使用这条受支持的回退路径。
+
+如果缓存中没有配置的 faster-whisper 模型，首次运行会从 Hugging Face 下载。Launcher 会保留远程 proxy 变量，仅通过 `NO_PROXY`/`no_proxy` 绕过 loopback Qwen。
 
 `runner: ray`
 : `AsrTranscribeActor` 作为有状态函数挂载；whisper 模型在每个 Ray worker 上懒加载一次。需要一个通过 Vane `VANE_*` 环境变量配置的可达 Ray 集群。
+
+Pipeline 会在本地 Ray runtime 启动前设置 `OPENAI_API_KEY`。连接已有或外部 Ray 集群时，必须在启动 Demo 前通过集群的 runtime 或 secret management 为每个 worker 配置 `OPENAI_API_KEY`；修改 Driver 环境无法更新已经存在的 worker。真实多节点目标集群仍需针对共享路径、worker 凭据和资源容量执行基础设施 smoke test。
 
 ## 排障
 
 | 症状 | 原因 / 契约 |
 | --- | --- |
 | `Python version mismatch` | 请用 CPython 3.12 运行；启动器拒绝其他版本。 |
-| `cannot import duckdb and vane` | `vane-ai` 缺失，或安装在活动 venv 之外。 |
+| `cannot import vane` | `vane-ai` 缺失，或安装在活动 venv 之外。 |
+| Whisper 模型下载或 SOCKS proxy 失败 | 确认可以访问 Hugging Face，并重新执行安装步骤 3，确保已安装 `socksio`。 |
 | `MinIO (127.0.0.1:9000): ...` | MinIO 未运行、凭据不同，或桶契约已变更。 |
 | `Qwen health probe ...` | `ai.health_url` 不可达，或返回非 200。 |
 | `review_unusable_audio` | WAV 头无效，或时长超出 [1 秒, 900 秒]。 |

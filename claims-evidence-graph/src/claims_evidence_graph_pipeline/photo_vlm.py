@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -11,6 +12,7 @@ from typing import Any
 
 import pyarrow as pa
 from pydantic import BaseModel, Field, ValidationError
+import vane
 from vane.ai import prompt
 
 from claims_evidence_graph_pipeline.contracts import (
@@ -21,6 +23,8 @@ from claims_evidence_graph_pipeline.contracts import (
     sha256_bytes,
     stable_json,
 )
+from claims_evidence_graph_pipeline.runner_workspace import RunnerWorkspace
+from claims_evidence_graph_pipeline.udfs import vane_execution_backend
 
 
 PHOTO_DAMAGE_SYSTEM_PROMPT = (
@@ -49,6 +53,20 @@ class PhotoDamageReport(BaseModel):
     evidence_description: str = Field(default="")
     uncertainty_reasons: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+# Vane 0.1.0 does not compile numeric JSON Schema bounds for structured output;
+# the Pydantic validation below still enforces the confidence range.
+PHOTO_DAMAGE_RETURN_FORMAT = PhotoDamageReport.model_json_schema()
+PHOTO_DAMAGE_RETURN_FORMAT["properties"]["confidence"].pop("minimum")
+PHOTO_DAMAGE_RETURN_FORMAT["properties"]["confidence"].pop("maximum")
+
+
+def configure_image_model_credentials(config: RunConfig) -> None:
+    """Configure provider credentials before Vane creates execution workers."""
+
+    if config.image_model_provider == "openai":
+        os.environ["OPENAI_API_KEY"] = config.image_model_api_key
 
 
 def _utc_now() -> str:
@@ -308,7 +326,7 @@ def _eligible_prompt_rows(
 
 
 def run_photo_damage_vlm(
-    conn: Any,
+    workspace: RunnerWorkspace,
     photo_input_table: pa.Table,
     photo_table: pa.Table,
     config: RunConfig,
@@ -317,31 +335,54 @@ def run_photo_damage_vlm(
     if not prompt_rows:
         return PHOTO_DAMAGE_EVIDENCE.arrow_table([]), PHOTO_MODEL_RUNS.arrow_table([])
 
-    input_rel = conn.from_arrow(_prompt_input_table(prompt_rows))
+    prompt_identities = [
+        (str(row["file_id"]), str(row["input_image_sha256"]))
+        for row in prompt_rows
+    ]
+    if len(set(prompt_identities)) != len(prompt_identities):
+        raise ContractError(
+            "Eligible photo prompt rows must have unique "
+            "(file_id, input_image_sha256) identities"
+        )
+
+    input_rel = workspace.stage_table(
+        "photo-damage-prompt-input",
+        _prompt_input_table(prompt_rows),
+    )
     started_at = _utc_now()
     start = time.perf_counter()
-    prompt_execution_backend = (
-        "subprocess_task"
-        if config.execution_backend == "local"
-        else config.execution_backend
-    )
+    prompt_execution_backend = vane_execution_backend(config.execution_backend)
     try:
         output_rel = prompt(
             input_rel,
-            "instruction",
-            image_columns=["file_bytes"],
+            [vane.col("instruction"), vane.col("file_bytes")],
             provider=config.image_model_provider,
             model=config.image_model,
             base_url=config.image_model_base_url,
-            api_key=config.image_model_api_key,
             system_message=PHOTO_DAMAGE_SYSTEM_PROMPT,
-            return_format=PhotoDamageReport,
+            return_format=PHOTO_DAMAGE_RETURN_FORMAT,
             output_column="raw_response",
             execution_backend=prompt_execution_backend,
-            max_tokens=config.image_model_max_tokens,
+            use_chat_completions=True,
+            max_output_tokens=config.image_model_max_tokens,
             temperature=config.image_model_temperature,
         )
-        raw_values = output_rel.to_arrow_table().column("raw_response").to_pylist()
+        output_table = workspace.materialize_table(
+            "photo-damage-prompt-output",
+            output_rel.select(
+                "file_id",
+                "input_image_sha256",
+                "raw_response",
+            ),
+            empty_table=pa.table(
+                {
+                    "file_id": pa.array([], type=pa.string()),
+                    "input_image_sha256": pa.array([], type=pa.string()),
+                    "raw_response": pa.array([], type=pa.string()),
+                }
+            ),
+        )
+        output_rows = output_table.to_pylist()
     except Exception as exc:
         finished_at = _utc_now()
         latency_ms = (time.perf_counter() - start) * 1000.0
@@ -381,11 +422,57 @@ def run_photo_damage_vlm(
 
     finished_at = _utc_now()
     latency_ms = (time.perf_counter() - start) * 1000.0
-    if len(raw_values) != len(prompt_rows):
-        error_message = (
+    output_error: tuple[str, str, str] | None = None
+    raw_response_by_identity: dict[tuple[str, str], Any] = {}
+
+    if len(output_rows) != len(prompt_rows):
+        output_error = (
+            "ModelOutputRowCountMismatch",
             "Image model returned "
-            f"{len(raw_values)} rows for {len(prompt_rows)} prompt rows"
+            f"{len(output_rows)} rows for {len(prompt_rows)} prompt rows",
+            "model_output_row_count_mismatch",
         )
+    else:
+        duplicate_identities: set[tuple[str, str]] = set()
+        for row in output_rows:
+            identity = (
+                str(row["file_id"]),
+                str(row["input_image_sha256"]),
+            )
+            if identity in raw_response_by_identity:
+                duplicate_identities.add(identity)
+            raw_response_by_identity[identity] = row["raw_response"]
+
+        expected_identities = set(prompt_identities)
+        actual_identities = set(raw_response_by_identity)
+        missing_identities = expected_identities - actual_identities
+        unexpected_identities = actual_identities - expected_identities
+        if duplicate_identities or missing_identities or unexpected_identities:
+            identity_details = stable_json(
+                {
+                    "duplicate": sorted(
+                        f"{file_id}:{digest}"
+                        for file_id, digest in duplicate_identities
+                    ),
+                    "missing": sorted(
+                        f"{file_id}:{digest}"
+                        for file_id, digest in missing_identities
+                    ),
+                    "unexpected": sorted(
+                        f"{file_id}:{digest}"
+                        for file_id, digest in unexpected_identities
+                    ),
+                }
+            )
+            output_error = (
+                "ModelOutputIdentityMismatch",
+                "Image model output identities do not uniquely cover prompt inputs: "
+                f"{identity_details}",
+                "model_output_identity_mismatch",
+            )
+
+    if output_error is not None:
+        output_error_code, output_error_message, output_error_reason = output_error
         run_rows = [
             _model_run_row(
                 prompt_row=row,
@@ -395,8 +482,8 @@ def run_photo_damage_vlm(
                 finished_at=finished_at,
                 latency_ms=latency_ms,
                 status="failed",
-                error_code="ModelOutputRowCountMismatch",
-                error_message=error_message,
+                error_code=output_error_code,
+                error_message=output_error_message,
             )
             for row in prompt_rows
         ]
@@ -407,14 +494,14 @@ def run_photo_damage_vlm(
             raise ContractError(
                 "Image model produced "
                 f"{len(run_rows)} non-success rows; max_image_model_errors="
-                f"{config.max_image_model_errors}: {error_message}"
+                f"{config.max_image_model_errors}: {output_error_message}"
             )
         return (
             PHOTO_DAMAGE_EVIDENCE.arrow_table(
                 _model_error_damage_rows(
                     prompt_rows=prompt_rows,
                     config=config,
-                    reason="model_output_row_count_mismatch",
+                    reason=output_error_reason,
                 )
             ),
             PHOTO_MODEL_RUNS.arrow_table(run_rows),
@@ -423,7 +510,8 @@ def run_photo_damage_vlm(
     damage_rows: list[dict[str, Any]] = []
     run_rows: list[dict[str, Any]] = []
 
-    for prompt_row, raw_response in zip(prompt_rows, raw_values, strict=True):
+    for prompt_row, identity in zip(prompt_rows, prompt_identities, strict=True):
+        raw_response = raw_response_by_identity[identity]
         run_id = _run_id(str(prompt_row["file_id"]), config)
         try:
             report = parse_photo_damage_report(raw_response)

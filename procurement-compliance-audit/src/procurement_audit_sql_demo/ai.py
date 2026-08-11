@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 import json
+import os
 from typing import Any
 import urllib.request
 
@@ -73,6 +74,13 @@ AUDIT_FACT_SYSTEM_MESSAGE = f"""你是采购审计文件的事实抽取器。
 
 class EvidenceAiInputError(ValueError):
     """Raised when trusted runtime metadata cannot form an AI request."""
+
+
+def configure_provider_credentials(config: AiConfig) -> None:
+    """Configure driver credentials before any local Ray workers start."""
+
+    if config.provider == "openai":
+        os.environ["OPENAI_API_KEY"] = config.api_key
 
 
 @dataclass(frozen=True)
@@ -311,18 +319,18 @@ def _validate_response_for_request(
 def _local_prompter(config: AiConfig) -> Any:
     """Create Vane's public provider implementation for driver-local prompts."""
 
-    provider = vane.ai.load_provider(
-        config.provider,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        timeout=config.timeout_seconds,
-    )
+    configure_provider_credentials(config)
+    provider = vane.ai.load_provider(config.provider)
     return provider.get_prompter(
         model=config.model,
         system_message=AUDIT_FACT_SYSTEM_MESSAGE,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        on_error="raise",
+        options={
+            "base_url": config.base_url,
+            "timeout": config.timeout_seconds,
+            "use_chat_completions": True,
+            "temperature": config.temperature,
+            "max_output_tokens": config.max_tokens,
+        },
     ).instantiate()
 
 
@@ -403,18 +411,6 @@ def build_evidence_ai_relation(
             else result_factory(table)
         )
 
-    provider_options = vane.ai.OpenAIProviderOptions(
-        base_url=config.ai.base_url,
-        api_key=config.ai.api_key,
-        timeout=config.ai.timeout_seconds,
-        concurrency=config.ai.concurrency,
-        max_api_concurrency=config.ai.concurrency,
-    )
-    prompt_options = vane.ai.OpenAIPromptOptions(
-        temperature=config.ai.temperature,
-        max_tokens=config.ai.max_tokens,
-        on_error="raise",
-    )
     completed: list[tuple[EvidenceAiRequest, str]] = []
     for request in requests:
         current_request = request
@@ -428,21 +424,26 @@ def build_evidence_ai_relation(
             )
             result = vane.ai.prompt(
                 relation,
-                "prompt_text",
-                image_columns=["image_bytes"],
+                [vane.col("prompt_text"), vane.col("image_bytes")],
                 provider=config.ai.provider,
                 model=config.ai.model,
-                provider_options=provider_options,
-                prompt_options=prompt_options,
                 system_message=AUDIT_FACT_SYSTEM_MESSAGE,
                 output_column="raw_response",
-                num_gpus=0,
+                on_error="raise",
+                base_url=config.ai.base_url,
+                timeout=config.ai.timeout_seconds,
+                use_chat_completions=True,
+                temperature=config.ai.temperature,
+                max_output_tokens=config.ai.max_tokens,
+                max_concurrency_per_actor=config.ai.concurrency,
             )
+            # Relation Prompt preserves request columns and appends its output.
+            response_relation = result.select(vane.col("raw_response"))
             # Materialize through Relation.write_parquet for RayRunner.
             if response_materializer is None:
-                response_rows = result.fetchall()
+                response_rows = response_relation.fetchall()
             else:
-                response_table = response_materializer(result)
+                response_table = response_materializer(response_relation)
                 if response_table.num_columns != 1:
                     raise EvidenceAiInputError(
                         f"AI response for {request.file_id} must contain one "

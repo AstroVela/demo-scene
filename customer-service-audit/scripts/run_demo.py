@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the demo with the validated public-PyPI Vane package."""
+"""Run the demo with the validated Vane package."""
 
 from __future__ import annotations
 
@@ -11,21 +11,12 @@ import sys
 from urllib.parse import urlparse
 
 
-PROXY_VARIABLES = (
-    "all_proxy",
-    "ALL_PROXY",
-    "http_proxy",
-    "HTTP_PROXY",
-    "https_proxy",
-    "HTTPS_PROXY",
-)
 EXPECTED_PYTHON_VERSION = (3, 12)
 VANE_DISTRIBUTION_NAME = "vane-ai"
-EXPECTED_VANE_DISTRIBUTION_VERSION = "0.1.0a1"
-EXPECTED_VANE_API_VERSION = "0.1.0a1"
-EXPECTED_DUCKDB_PYTHON_VERSION = "0.1.0a1"
+EXPECTED_VANE_DISTRIBUTION_VERSION = "0.1.0"
+EXPECTED_VANE_API_VERSION = "0.1.0"
 DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS = "60000"
-INSTALL_HINT = "python -m pip install vane-ai"
+INSTALL_HINT = "uv pip install 'vane-ai[openai]==0.1.0'"
 
 
 def _runtime_error(message: str) -> RuntimeError:
@@ -34,7 +25,7 @@ def _runtime_error(message: str) -> RuntimeError:
         f"current interpreter: {sys.executable}\n"
         f"current prefix: {sys.prefix}\n"
         f"install the verified package with:\n  {INSTALL_HINT}\n"
-        "then run: python -m pip install -r requirements.txt"
+        "then run: uv pip install -r requirements.txt"
     )
 
 
@@ -52,7 +43,6 @@ def validate_python_version(actual: tuple[int, int]) -> None:
 def validate_runtime_versions(
     vane_distribution_version: str,
     vane_api_version: str,
-    duckdb_python_version: str,
 ) -> None:
     """Fail fast unless every verified runtime identifier is exact."""
 
@@ -63,7 +53,6 @@ def validate_runtime_versions(
             EXPECTED_VANE_DISTRIBUTION_VERSION,
         ),
         ("Vane API", vane_api_version, EXPECTED_VANE_API_VERSION),
-        ("DuckDB Python", duckdb_python_version, EXPECTED_DUCKDB_PYTHON_VERSION),
     )
     for label, actual, expected in actual_versions:
         if actual != expected:
@@ -77,7 +66,7 @@ def validate_runtime_api(vane_module: object) -> None:
 
     missing = [
         name
-        for name in ("func", "attach_function", "configure")
+        for name in ("func", "cls", "attach_function", "configure")
         if not callable(getattr(vane_module, name, None))
     ]
     if missing:
@@ -91,6 +80,8 @@ def validate_runtime_api(vane_module: object) -> None:
             raise _runtime_error(
                 f"real Vane runtime is missing callable vane.ai.{name}"
             )
+    if not hasattr(vane_module, "ray_cxx"):
+        raise _runtime_error("real Vane runtime is missing vane.ray_cxx")
 
 
 def require_package_from_current_environment(
@@ -114,16 +105,14 @@ def require_real_vane_runtime() -> None:
 
     validate_python_version(tuple(sys.version_info[:2]))
     try:
-        import duckdb
         import vane
     except Exception as exc:
-        raise _runtime_error(f"cannot import duckdb and vane: {exc}") from exc
+        raise _runtime_error(f"cannot import vane: {exc}") from exc
 
     try:
         validate_runtime_versions(
             importlib_metadata.version(VANE_DISTRIBUTION_NAME),
             str(getattr(vane, "__version__", "<missing>")),
-            str(getattr(duckdb, "__version__", "<missing>")),
         )
     except RuntimeError:
         raise
@@ -134,21 +123,14 @@ def require_real_vane_runtime() -> None:
 
     validate_runtime_api(vane)
     require_package_from_current_environment("vane", getattr(vane, "__file__", None))
-    require_package_from_current_environment(
-        "duckdb",
-        getattr(duckdb, "__file__", None),
-    )
 
 
 def configure_loopback_network(base_url: str) -> None:
-    """Bypass configured proxies only for a loopback HTTP AI endpoint."""
+    """Bypass proxies for loopback AI calls without affecting remote traffic."""
 
     parsed = urlparse(base_url)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
         return
-
-    for name in PROXY_VARIABLES:
-        os.environ.pop(name, None)
 
     required_hosts = ("localhost", "127.0.0.1", "::1")
     for name in ("NO_PROXY", "no_proxy"):

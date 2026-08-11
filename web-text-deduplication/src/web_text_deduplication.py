@@ -10,7 +10,9 @@ import os
 import re
 import sys
 import unicodedata
+from collections import Counter
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pyarrow as pa
@@ -33,11 +35,13 @@ else:
 
 from _common import (
     PUBLIC_BACKEND_CHOICES,
+    RunnerWorkspace,
     backend_metadata_entry,
     batch_udf_options,
     merge_backend_metadata,
     positive_int,
-    require_local_relation_runner,
+    read_csv_as_strings,
+    require_ray_runner,
     table_from_rows,
     write_json,
 )
@@ -268,12 +272,19 @@ DOCUMENT_PROVENANCE_COLUMNS = {
 }
 
 
-def input_file_relation(conn: Any, path: Path) -> Any:
+def input_file_relation(
+    conn: Any,
+    workspace: RunnerWorkspace,
+    path: Path,
+) -> Any:
     validated = validate_input_path(path)
     if validated.suffix.lower() == ".parquet":
         source = conn.read_parquet(str(validated))
     else:
-        source = conn.read_csv(str(validated), header=True)
+        source = workspace.stage_table(
+            "input-documents",
+            read_csv_as_strings(validated),
+        )
 
     columns = set(source.columns)
     missing = sorted(DOCUMENT_BASE_COLUMNS - columns)
@@ -302,11 +313,12 @@ def input_file_relation(conn: Any, path: Path) -> Any:
 
 def load_source_documents(
     conn: Any,
+    workspace: RunnerWorkspace,
     args: argparse.Namespace,
     udf_options: dict[str, str],
 ) -> tuple[Any, dict[str, dict[str, Any]]]:
     if args.source == "file":
-        return input_file_relation(conn, Path(args.input)), {}
+        return input_file_relation(conn, workspace, Path(args.input)), {}
 
     specs = load_record_manifest(Path(args.record_manifest))
     raw_records_rel = common_crawl_range_relation(
@@ -315,11 +327,10 @@ def load_source_documents(
         timeout=args.source_timeout,
         max_html_bytes=args.max_html_bytes,
     )
-    conn.sql("drop table if exists raw_warc_records")
-    raw_records_rel.order("capture_timestamp, index_url").to_table(
-        "raw_warc_records"
+    raw_records = workspace.materialize_view(
+        "raw_warc_records",
+        raw_records_rel.order("capture_timestamp, index_url"),
     )
-    raw_records = conn.sql("select * from raw_warc_records")
     blocks_rel = raw_records.map_batches(
         ExtractHtmlBlocksBatch(
             min_block_chars=args.min_block_chars,
@@ -455,21 +466,22 @@ def importable_fingerprint_documents_batch() -> Any:
     return module.fingerprint_documents_batch
 
 
-def band_membership_relation_sql(conn: Any) -> Any:
-    band_queries = [
-        f"""
-        select
-          f.doc_id,
-          d.domain,
-          {band_index} as band_index,
-          list_extract(f.lsh_bands, {band_index + 1}) as lsh_band
-        from fingerprinted f
-        join documents d using (doc_id)
-        where f.shingle_count > 0
-        """
+def band_membership_relations(conn: Any) -> list[Any]:
+    return [
+        conn.sql(
+            f"""
+            select
+              f.doc_id,
+              d.domain,
+              {band_index} as band_index,
+              list_extract(f.lsh_bands, {band_index + 1}) as lsh_band
+            from fingerprinted f
+            join documents d using (doc_id)
+            where f.shingle_count > 0
+            """
+        )
         for band_index in range(LSH_BANDS)
     ]
-    return conn.sql(" union all ".join(band_queries))
 
 
 def jaccard(left: list[str], right: list[str]) -> float:
@@ -545,6 +557,54 @@ def importable_score_pairs_batch() -> Any:
     return module.score_pairs_batch
 
 
+def build_collision_buckets_table(band_memberships: Any) -> pa.Table:
+    groups: dict[tuple[int, str], dict[str, set[str]]] = {}
+    for band_index, lsh_band, doc_id, domain in band_memberships.project(
+        "band_index, lsh_band, doc_id, domain"
+    ).fetchall():
+        group = groups.setdefault(
+            (int(band_index), str(lsh_band)),
+            {"doc_ids": set(), "domains": set()},
+        )
+        group["doc_ids"].add(str(doc_id))
+        group["domains"].add(str(domain))
+
+    rows = []
+    for (band_index, lsh_band), group in groups.items():
+        member_doc_ids = sorted(group["doc_ids"])
+        if len(member_doc_ids) < 2:
+            continue
+        member_count = len(member_doc_ids)
+        rows.append(
+            {
+                "band_index": band_index,
+                "lsh_band": lsh_band,
+                "member_count": member_count,
+                "member_doc_ids": member_doc_ids,
+                "member_domains": sorted(group["domains"]),
+                "pair_slots": member_count * (member_count - 1) // 2,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            -row["member_count"],
+            row["band_index"],
+            row["lsh_band"],
+        )
+    )
+    return table_from_rows(
+        rows,
+        {
+            "band_index": pa.int64(),
+            "lsh_band": pa.string(),
+            "member_count": pa.int64(),
+            "member_doc_ids": pa.list_(pa.string()),
+            "member_domains": pa.list_(pa.string()),
+            "pair_slots": pa.int64(),
+        },
+    )
+
+
 def relation_row_count(rel: Any) -> int:
     row = rel.aggregate("count(*) as row_count").fetchone()
     return int(row[0])
@@ -557,7 +617,8 @@ def validate_candidate_pair_budget(
 ) -> int:
     candidate_pair_slots, largest_bucket_size, largest_bucket_pair_slots = (
         collision_buckets.aggregate(
-            "coalesce(sum(pair_slots), 0) as candidate_pair_slots, "
+            "cast(coalesce(sum(pair_slots), 0) as bigint) "
+            "as candidate_pair_slots, "
             "coalesce(max(member_count), 0) as largest_bucket_size, "
             "coalesce(max(pair_slots), 0) as largest_bucket_pair_slots"
         ).fetchone()
@@ -589,47 +650,132 @@ def validate_document_ids(documents: Any) -> None:
         raise ValueError("documents.doc_id must be unique")
 
 
-def cluster_relation_sql(conn: Any) -> Any:
-    return conn.sql(
+def build_candidate_summary_table(
+    documents: Any,
+    candidate_pairs: Any,
+    duplicate_pairs: Any,
+    collision_buckets: Any,
+    *,
+    candidate_pair_slot_budget: int,
+) -> pa.Table:
+    document_rows = relation_row_count(documents)
+    candidate_pair_rows, same_domain_candidates, cross_domain_candidates = (
+        candidate_pairs.aggregate(
+            "count(*) as candidate_pair_rows, "
+            "count(*) filter (where left_domain = right_domain) "
+            "as same_domain_candidate_pair_rows, "
+            "count(*) filter (where left_domain <> right_domain) "
+            "as cross_domain_candidate_pair_rows"
+        ).fetchone()
+    )
+    duplicate_pair_rows, same_domain_duplicates, cross_domain_duplicates = (
+        duplicate_pairs.aggregate(
+            "count(*) as duplicate_pair_rows, "
+            "count(*) filter (where left_domain = right_domain) "
+            "as same_domain_duplicate_pair_rows, "
+            "count(*) filter (where left_domain <> right_domain) "
+            "as cross_domain_duplicate_pair_rows"
+        ).fetchone()
+    )
+    possible_pair_rows = document_rows * (document_rows - 1) // 2
+    candidate_reduction_ratio = (
+        round(1.0 - int(candidate_pair_rows) / possible_pair_rows, 4)
+        if possible_pair_rows
+        else 0.0
+    )
+    candidate_pair_slots = int(
+        collision_buckets.aggregate(
+            "cast(coalesce(sum(pair_slots), 0) as bigint)"
+        ).fetchone()[0]
+    )
+    return table_from_rows(
+        [
+            {
+                "document_rows": document_rows,
+                "possible_pair_rows": possible_pair_rows,
+                "candidate_pair_rows": int(candidate_pair_rows),
+                "duplicate_pair_rows": int(duplicate_pair_rows),
+                "candidate_reduction_ratio": candidate_reduction_ratio,
+                "same_domain_candidate_pair_rows": int(same_domain_candidates),
+                "cross_domain_candidate_pair_rows": int(cross_domain_candidates),
+                "same_domain_duplicate_pair_rows": int(same_domain_duplicates),
+                "cross_domain_duplicate_pair_rows": int(cross_domain_duplicates),
+                "candidate_pair_slots": candidate_pair_slots,
+                "candidate_pair_slot_budget": candidate_pair_slot_budget,
+            }
+        ],
+        {
+            "document_rows": pa.int64(),
+            "possible_pair_rows": pa.int64(),
+            "candidate_pair_rows": pa.int64(),
+            "duplicate_pair_rows": pa.int64(),
+            "candidate_reduction_ratio": pa.float64(),
+            "same_domain_candidate_pair_rows": pa.int64(),
+            "cross_domain_candidate_pair_rows": pa.int64(),
+            "same_domain_duplicate_pair_rows": pa.int64(),
+            "cross_domain_duplicate_pair_rows": pa.int64(),
+            "candidate_pair_slots": pa.int64(),
+            "candidate_pair_slot_budget": pa.int64(),
+        },
+    )
+
+
+def build_cluster_relation(
+    conn: Any,
+    workspace: RunnerWorkspace,
+) -> Any:
+    doc_ids = [
+        str(row[0])
+        for row in conn.sql("select doc_id from documents order by doc_id").fetchall()
+    ]
+    parent = {doc_id: doc_id for doc_id in doc_ids}
+
+    def find_root(doc_id: str) -> str:
+        while parent[doc_id] != doc_id:
+            parent[doc_id] = parent[parent[doc_id]]
+            doc_id = parent[doc_id]
+        return doc_id
+
+    duplicate_edges = conn.sql(
         """
-        with recursive
-        edges as (
-          select doc_id as src_doc_id, doc_id as dst_doc_id from documents
-          union
-          select left_doc_id as src_doc_id, right_doc_id as dst_doc_id from duplicate_pairs
-          union
-          select right_doc_id as src_doc_id, left_doc_id as dst_doc_id from duplicate_pairs
-        ),
-        reach(src_doc_id, dst_doc_id) as (
-          select src_doc_id, dst_doc_id from edges
-          union
-          select r.src_doc_id, e.dst_doc_id
-          from reach r
-          join edges e on e.src_doc_id = r.dst_doc_id
-        ),
-        components as (
-          select src_doc_id as doc_id, min(dst_doc_id) as root_doc_id
-          from reach
-          group by src_doc_id
-        ),
-        cluster_sizes as (
-          select root_doc_id, count(*) as cluster_size
-          from components
-          group by root_doc_id
-        )
-        select
-          'cluster-' || c.root_doc_id as cluster_id,
-          c.doc_id,
-          cs.cluster_size
-        from components c
-        join cluster_sizes cs using (root_doc_id)
-        order by cluster_id, c.doc_id
+        select left_doc_id, right_doc_id
+        from duplicate_pairs
+        order by left_doc_id, right_doc_id
         """
+    ).fetchall()
+    for left_doc_id, right_doc_id in duplicate_edges:
+        left_root = find_root(str(left_doc_id))
+        right_root = find_root(str(right_doc_id))
+        if left_root == right_root:
+            continue
+        smaller_root, larger_root = sorted((left_root, right_root))
+        parent[larger_root] = smaller_root
+
+    roots = {doc_id: find_root(doc_id) for doc_id in doc_ids}
+    cluster_sizes = Counter(roots.values())
+    return workspace.stage_table(
+        "clusters",
+        table_from_rows(
+            [
+                {
+                    "cluster_id": f"cluster-{roots[doc_id]}",
+                    "doc_id": doc_id,
+                    "cluster_size": cluster_sizes[roots[doc_id]],
+                }
+                for doc_id in doc_ids
+            ],
+            {
+                "cluster_id": pa.string(),
+                "doc_id": pa.string(),
+                "cluster_size": pa.int64(),
+            },
+        ),
     )
 
 
 def write_artifacts(
     *,
+    workspace: RunnerWorkspace,
     output_dir: Path,
     documents: Any,
     fingerprinted: Any,
@@ -736,15 +882,19 @@ def write_artifacts(
             "fixture result contract mismatch: " + "; ".join(result_mismatches)
         )
 
-    duplicate_pairs.write_csv(str(output_dir / "duplicate_pairs.csv"))
-    duplicate_summary.write_csv(str(output_dir / "duplicate_summary.csv"))
-    clusters.write_csv(str(output_dir / "clusters.csv"))
-    cluster_inspection.write_csv(str(output_dir / "cluster_inspection.csv"))
-    collision_buckets.write_csv(str(output_dir / "collision_buckets.csv"))
-    domain_summary.write_csv(str(output_dir / "domain_summary.csv"))
-    candidate_summary.write_csv(str(output_dir / "candidate_summary.csv"))
-    source_records.write_csv(str(output_dir / "source_records.csv"))
-    source_summary.write_csv(str(output_dir / "source_summary.csv"))
+    csv_outputs = {
+        "duplicate_pairs": duplicate_pairs,
+        "duplicate_summary": duplicate_summary,
+        "clusters": clusters,
+        "cluster_inspection": cluster_inspection,
+        "collision_buckets": collision_buckets,
+        "domain_summary": domain_summary,
+        "candidate_summary": candidate_summary,
+        "source_records": source_records,
+        "source_summary": source_summary,
+    }
+    for name, relation in csv_outputs.items():
+        workspace.write_csv(relation, output_dir / f"{name}.csv")
     documents.write_parquet(str(output_dir / "source_blocks.parquet"))
     fingerprinted.write_parquet(str(output_dir / "fingerprinted.parquet"))
     scored_pairs.write_parquet(str(output_dir / "scored_pairs.parquet"))
@@ -861,7 +1011,8 @@ def write_artifacts(
 
 
 def run(args: argparse.Namespace) -> None:
-    runner = require_local_relation_runner(vane.current_config().runner)
+    runner = vane.current_config().runner
+    require_ray_runner(runner)
 
     snapshot_metadata_path = snapshot_metadata_path_for_run(args)
     if snapshot_metadata_path is None:
@@ -877,14 +1028,34 @@ def run(args: argparse.Namespace) -> None:
             Path(args.input), snapshot_metadata_path
         )
 
+    with TemporaryDirectory(prefix="vane-web-dedup-ray-") as workspace_root:
+        _run_with_workspace(
+            args,
+            runner,
+            snapshot_verification,
+            Path(workspace_root),
+        )
+
+
+def _run_with_workspace(
+    args: argparse.Namespace,
+    runner: str,
+    snapshot_verification: dict[str, Any],
+    workspace_root: Path,
+) -> None:
     conn = vane.connect()
+    workspace = RunnerWorkspace(workspace_root, conn)
     udf_options = batch_udf_options(args.execution_backend)
     documents_rel, backend_metadata = load_source_documents(
-        conn, args, udf_options
+        conn,
+        workspace,
+        args,
+        udf_options,
     )
-    conn.sql("drop table if exists documents")
-    documents_rel.order("doc_id").to_table("documents")
-    documents = conn.sql("select * from documents")
+    documents = workspace.materialize_view(
+        "documents",
+        documents_rel.order("doc_id"),
+    )
     validate_document_ids(documents)
     if snapshot_verification["status"] == "verified":
         actual_document_rows = relation_row_count(documents)
@@ -919,9 +1090,10 @@ def run(args: argparse.Namespace) -> None:
         order by capture_timestamp, capture_url
         """
     )
-    conn.sql("drop table if exists source_records")
-    source_records_rel.to_table("source_records")
-    source_records = conn.sql("select * from source_records")
+    source_records = workspace.materialize_view(
+        "source_records",
+        source_records_rel,
+    )
     if "expected_source_record_rows" in snapshot_verification:
         actual_source_records = relation_row_count(source_records)
         expected_source_records = int(
@@ -956,9 +1128,10 @@ def run(args: argparse.Namespace) -> None:
         from documents
         """
     )
-    conn.sql("drop table if exists source_summary")
-    source_summary_rel.to_table("source_summary")
-    source_summary = conn.sql("select * from source_summary")
+    source_summary = workspace.materialize_view(
+        "source_summary",
+        source_summary_rel,
+    )
 
     fingerprinted_rel = conn.sql("select * from documents order by doc_id").map_batches(
         importable_fingerprint_documents_batch(),
@@ -969,14 +1142,17 @@ def run(args: argparse.Namespace) -> None:
     backend_metadata["fingerprint_documents"] = backend_metadata_entry(
         args.execution_backend
     )
-    conn.sql("drop table if exists fingerprinted")
-    fingerprinted_rel.order("doc_id").to_table("fingerprinted")
-    fingerprinted = conn.sql("select * from fingerprinted")
+    fingerprinted = workspace.materialize_view(
+        "fingerprinted",
+        fingerprinted_rel.order("doc_id"),
+    )
 
-    band_memberships_rel = band_membership_relation_sql(conn)
-    conn.sql("drop table if exists band_memberships")
-    band_memberships_rel.to_table("band_memberships")
-    band_memberships = conn.sql("select * from band_memberships")
+    band_paths = [
+        workspace.write_relation(f"band-{index}", relation)
+        for index, relation in enumerate(band_membership_relations(conn))
+    ]
+    band_memberships = conn.read_parquet([str(path) for path in band_paths])
+    band_memberships.create_view("band_memberships", replace=True)
     expected_band_rows = int(
         fingerprinted.aggregate(
             f"count(*) filter (where shingle_count > 0) * {LSH_BANDS}"
@@ -989,24 +1165,11 @@ def run(args: argparse.Namespace) -> None:
             f"expected {expected_band_rows}, got {actual_band_rows}"
         )
 
-    collision_buckets_rel = conn.sql(
-        """
-        select
-          band_index,
-          lsh_band,
-          count(*) as member_count,
-          list(doc_id order by doc_id) as member_doc_ids,
-          list(distinct domain order by domain) as member_domains,
-          cast(count(*) * (count(*) - 1) / 2 as bigint) as pair_slots
-        from band_memberships
-        group by band_index, lsh_band
-        having count(*) > 1
-        order by member_count desc, band_index, lsh_band
-        """
+    collision_buckets = workspace.stage_table(
+        "collision-buckets",
+        build_collision_buckets_table(band_memberships),
     )
-    conn.sql("drop table if exists collision_buckets")
-    collision_buckets_rel.to_table("collision_buckets")
-    collision_buckets = conn.sql("select * from collision_buckets")
+    collision_buckets.create_view("collision_buckets", replace=True)
     validate_candidate_pair_budget(
         collision_buckets,
         max_candidate_pair_slots=args.max_candidate_pair_slots,
@@ -1044,9 +1207,10 @@ def run(args: argparse.Namespace) -> None:
         order by c.left_doc_id, c.right_doc_id
         """
     )
-    conn.sql("drop table if exists candidate_pairs")
-    candidate_pairs_rel.to_table("candidate_pairs")
-    candidate_pairs = conn.sql("select * from candidate_pairs")
+    candidate_pairs = workspace.materialize_view(
+        "candidate_pairs",
+        candidate_pairs_rel,
+    )
     scored_pairs_rel = candidate_pairs.map_batches(
         importable_score_pairs_batch(),
         schema=SCORED_PAIR_SCHEMA,
@@ -1056,11 +1220,13 @@ def run(args: argparse.Namespace) -> None:
     backend_metadata["score_pairs"] = backend_metadata_entry(
         args.execution_backend
     )
-    conn.sql("drop table if exists scored_pairs")
-    scored_pairs_rel.order(
-        "shingle_jaccard desc, signature_overlap desc, left_doc_id, right_doc_id"
-    ).to_table("scored_pairs")
-    scored_pairs = conn.sql("select * from scored_pairs")
+    scored_pairs = workspace.materialize_view(
+        "scored_pairs",
+        scored_pairs_rel.order(
+            "shingle_jaccard desc, signature_overlap desc, "
+            "left_doc_id, right_doc_id"
+        ),
+    )
 
     duplicate_pairs_rel = conn.sql(
         """
@@ -1070,9 +1236,10 @@ def run(args: argparse.Namespace) -> None:
         order by shingle_jaccard desc, signature_overlap desc, left_doc_id, right_doc_id
         """
     )
-    conn.sql("drop table if exists duplicate_pairs")
-    duplicate_pairs_rel.to_table("duplicate_pairs")
-    duplicate_pairs = conn.sql("select * from duplicate_pairs")
+    duplicate_pairs = workspace.materialize_view(
+        "duplicate_pairs",
+        duplicate_pairs_rel,
+    )
 
     duplicate_summary_rel = conn.sql(
         """
@@ -1101,9 +1268,10 @@ def run(args: argparse.Namespace) -> None:
         join documents r on r.doc_id = p.right_doc_id
         """
     )
-    conn.sql("drop table if exists duplicate_summary")
-    duplicate_summary_rel.to_table("duplicate_summary")
-    duplicate_summary = conn.sql("select * from duplicate_summary")
+    duplicate_summary = workspace.materialize_view(
+        "duplicate_summary",
+        duplicate_summary_rel,
+    )
 
     domain_summary_rel = conn.sql(
         """
@@ -1146,70 +1314,24 @@ def run(args: argparse.Namespace) -> None:
         order by d.domain
         """
     )
-    conn.sql("drop table if exists domain_summary")
-    domain_summary_rel.to_table("domain_summary")
-    domain_summary = conn.sql("select * from domain_summary")
-
-    candidate_summary_rel = conn.sql(
-        f"""
-        with document_count as (
-          select count(*) as document_rows from documents
-        ),
-        candidate_count as (
-          select
-            count(*) as candidate_pair_rows,
-            count(*) filter (where left_domain = right_domain)
-              as same_domain_candidate_pair_rows,
-            count(*) filter (where left_domain <> right_domain)
-              as cross_domain_candidate_pair_rows
-          from candidate_pairs
-        ),
-        duplicate_count as (
-          select
-            count(*) as duplicate_pair_rows,
-            count(*) filter (where left_domain = right_domain)
-              as same_domain_duplicate_pair_rows,
-            count(*) filter (where left_domain <> right_domain)
-              as cross_domain_duplicate_pair_rows
-          from duplicate_pairs
-        ),
-        bucket_expansion as (
-          select coalesce(sum(pair_slots), 0) as candidate_pair_slots
-          from collision_buckets
-        )
-        select
-          d.document_rows,
-          cast(d.document_rows * (d.document_rows - 1) / 2 as bigint)
-            as possible_pair_rows,
-          c.candidate_pair_rows,
-          p.duplicate_pair_rows,
-          case
-            when d.document_rows < 2 then 0.0
-            else round(
-              1.0 - c.candidate_pair_rows /
-                (d.document_rows * (d.document_rows - 1) / 2),
-              4
-            )
-          end as candidate_reduction_ratio,
-          c.same_domain_candidate_pair_rows,
-          c.cross_domain_candidate_pair_rows,
-          p.same_domain_duplicate_pair_rows,
-          p.cross_domain_duplicate_pair_rows,
-          b.candidate_pair_slots,
-          {args.max_candidate_pair_slots} as candidate_pair_slot_budget
-        from document_count d
-        cross join candidate_count c
-        cross join duplicate_count p
-        cross join bucket_expansion b
-        """
+    domain_summary = workspace.materialize_view(
+        "domain_summary",
+        domain_summary_rel,
     )
-    conn.sql("drop table if exists candidate_summary")
-    candidate_summary_rel.to_table("candidate_summary")
-    candidate_summary = conn.sql("select * from candidate_summary")
 
-    conn.sql("drop table if exists clusters")
-    cluster_relation_sql(conn).to_table("clusters")
-    clusters = conn.sql("select * from clusters")
+    candidate_summary = workspace.stage_table(
+        "candidate_summary",
+        build_candidate_summary_table(
+            documents,
+            candidate_pairs,
+            duplicate_pairs,
+            collision_buckets,
+            candidate_pair_slot_budget=args.max_candidate_pair_slots,
+        ),
+    )
+
+    clusters = build_cluster_relation(conn, workspace)
+    clusters.create_view("clusters", replace=True)
 
     representatives_rel = conn.sql(
         """
@@ -1273,9 +1395,10 @@ def run(args: argparse.Namespace) -> None:
         order by cluster_id
         """
     )
-    conn.sql("drop table if exists representatives")
-    representatives_rel.to_table("representatives")
-    representatives = conn.sql("select * from representatives")
+    representatives = workspace.materialize_view(
+        "representatives",
+        representatives_rel,
+    )
 
     cluster_inspection_rel = conn.sql(
         """
@@ -1324,11 +1447,13 @@ def run(args: argparse.Namespace) -> None:
         order by m.cluster_size desc, m.cluster_id
         """
     )
-    conn.sql("drop table if exists cluster_inspection")
-    cluster_inspection_rel.to_table("cluster_inspection")
-    cluster_inspection = conn.sql("select * from cluster_inspection")
+    cluster_inspection = workspace.materialize_view(
+        "cluster_inspection",
+        cluster_inspection_rel,
+    )
 
     artifact_counts = write_artifacts(
+        workspace=workspace,
         output_dir=Path(args.output_dir),
         documents=documents,
         fingerprinted=fingerprinted,
@@ -1424,12 +1549,11 @@ def parse_args() -> argparse.Namespace:
         "--execution-backend",
         choices=PUBLIC_BACKEND_CHOICES,
         default="auto",
-        help="Let Vane infer the backend, or pin a task backend explicitly.",
+        help="Use RayRunner's ray_task default, or pin a task backend explicitly.",
     )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
     try:
-        require_local_relation_runner(vane.current_config().runner)
         if args.source == "file":
             validate_input_path(Path(args.input))
             if args.snapshot_metadata:
@@ -1443,7 +1567,7 @@ def parse_args() -> argparse.Namespace:
                 )
             validate_input_path(Path(args.record_manifest))
             load_record_manifest(Path(args.record_manifest))
-    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
     return args
 
@@ -1454,6 +1578,8 @@ def main() -> int:
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        vane.teardown_runner()
     return 0
 
 

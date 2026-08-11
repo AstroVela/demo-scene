@@ -177,6 +177,12 @@ def _build_faster_whisper(config: AsrConfig):
     return transcribe
 
 
+@vane.cls(
+    actor_number=1,
+    return_dtype="VARCHAR",
+    name="asr_transcribe_json",
+    gpus=0,
+)
 class AsrTranscribeActor:
     """Stateful ASR worker: the whisper model loads lazily once per actor."""
 

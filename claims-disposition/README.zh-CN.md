@@ -17,7 +17,7 @@
 
 ## 为什么使用 Vane
 
-Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。仓库默认使用 `local` Runner，同一套 fixture 已同时通过 Local 和 Ray 验证。Local 在 Driver 上创建一份 RapidOCR 引擎，对每个合格证明文档 locator 各执行一次，并把不可变结果暴露给 SQL；Ray 则在隔离的有状态 Actor worker 内初始化原生 ONNX 引擎。
+Vane 是面向多模态数据的多模计算引擎，让结构化记录、文档、图片、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追踪的 Relation Pipeline 中协同执行。Vane 还将 Pipeline 逻辑与执行后端解耦。仓库默认使用 `ray` Runner，并已在本地 Ray runtime 上端到端验证 PostgreSQL、MinIO、RapidOCR Actor 与 Qwen 完整路径。Local 仍是受支持的回退路径：它在 Driver 上创建一份 RapidOCR 引擎，对每个合格证明文档 locator 各执行一次，并把不可变结果暴露给 SQL。
 
 ## 架构
 
@@ -55,13 +55,13 @@ stg_claims / stg_claim_materials / stg_run_config
 
 ## 运行 Demo
 
-本 Demo 要求 CPython 3.12，并固定公共 PyPI 上的 `vane-ai==0.1.0a1`。该版本提供面向 CPython 3.10、3.11 和 3.12 的 `manylinux_2_28_x86_64` wheel（glibc 2.28 或更新），但 Launcher 只接受本 Demo 已验证的 CPython 3.12 运行时。先按照[完整运行手册](docs/runbook.zh-CN.md)创建环境，执行 `python -m pip install vane-ai` 安装 Vane，再执行 `python -m pip install -r requirements.txt` 安装 Demo，并准备正在运行的 PostgreSQL、MinIO 和 Qwen 服务，然后运行：
+本 Demo 要求 CPython 3.12，并固定 `vane-ai[openai]==0.1.0`。已验证环境使用 uv 从 PyPI 安装 Vane 及其依赖。请按照[完整运行手册](docs/runbook.zh-CN.md) 执行准确的安装命令，并准备正在运行的 PostgreSQL、MinIO 和 Qwen 服务，然后运行：
 
 ```bash
 python scripts/run_demo.py e2e
 ```
 
-`runtime.yml` 默认是 `runner: local`。如需验证分布式 Actor 和 AI Relation 路径，可改为 `runner: ray` 并连接 Ray 集群；两种模式都已使用真实 fixture、OCR 和 Qwen 服务跑通。
+`runtime.yml` 默认是 `runner: ray`，该路径已在本地 Ray runtime 上使用真实 fixture、OCR 和 Qwen 服务跑通。真实多节点目标集群仍需针对共享路径、worker 凭据和资源容量单独执行基础设施 smoke test。
 
 成功运行会输出：
 
@@ -84,7 +84,7 @@ verified 4 claim dispositions: CLM-APPROVE=approve_for_payment, CLM-DENY=deny_cl
 ```text
 claims-disposition/
 ├── pyproject.toml
-│   # 声明 Python/Runtime 依赖，其中包括公共 PyPI Vane 的精确版本。
+│   # 声明 Python/Runtime 依赖，其中包括 Vane 的精确版本。
 │
 ├── requirements.txt
 │   # 根据 pyproject.toml 安装当前源码及 Fast Test Extra。
@@ -94,7 +94,7 @@ claims-disposition/
 │
 ├── scripts/
 │   └── run_demo.py
-│       # 校验 CPython 3.12、Vane/DuckDB 精确标识、必需 API、
+│       # 校验 CPython 3.12、Vane distribution/API/engine 精确标识、必需 API、
 │       # 包来源和 Loopback 网络设置，再转交给 CLI。
 │
 ├── src/claims_disposition_sql_pipeline/

@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pyarrow as pa
+import vane
 
 
 def _default_path(env_name: str, fallback: str | Path) -> Path:
@@ -29,6 +29,8 @@ DEFAULT_OUTPUT_DIR = _default_path(
 
 SUPPORTED_MEDIA_TYPES = {"image/jpeg", "image/png"}
 SUPPORTED_RUN_PROFILES = {"baseline", "semantic", "semantic_strict"}
+SUPPORTED_EXECUTION_BACKENDS = ("local", "ray_task")
+SUPPORTED_RUNNERS = ("local", "ray")
 SEMANTIC_RUN_PROFILES = {"semantic", "semantic_strict"}
 
 CLAIMS_REQUIRED_FIELDS = {
@@ -81,8 +83,8 @@ class RunConfig:
     mode: str = "offline"
     profile: str = "baseline"
     batch_size: int = 8
-    execution_backend: str = "local"
-    runner: str = "local"
+    execution_backend: str = "ray_task"
+    runner: str = "ray"
     write_parquet: bool = True
     fail_on_warnings: bool = False
     photo_labels_path: Path | None = None
@@ -157,15 +159,15 @@ class TableContract:
 
 def duckdb_type(data_type: pa.DataType) -> Any:
     if pa.types.is_string(data_type):
-        return duckdb.sqltypes.VARCHAR
+        return vane.sqltypes.VARCHAR
     if pa.types.is_boolean(data_type):
-        return duckdb.sqltypes.BOOLEAN
+        return vane.sqltypes.BOOLEAN
     if pa.types.is_int64(data_type):
-        return duckdb.sqltypes.BIGINT
+        return vane.sqltypes.BIGINT
     if pa.types.is_float64(data_type):
-        return duckdb.sqltypes.DOUBLE
+        return vane.sqltypes.DOUBLE
     if pa.types.is_binary(data_type):
-        return duckdb.sqltypes.BLOB
+        return vane.sqltypes.BLOB
     raise TypeError(f"Unsupported Arrow type for DuckDB schema: {data_type}")
 
 

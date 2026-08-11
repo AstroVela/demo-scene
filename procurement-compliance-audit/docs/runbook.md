@@ -10,12 +10,12 @@ This runbook contains the exact environment, installation, model-service, config
 | --- | --- |
 | Operating system | Ubuntu 24.04 x86_64, glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0a1` |
+| Vane | `vane-ai[openai]==0.1.0` |
 | PostgreSQL | `127.0.0.1:5432`, database `vane_insight` |
 | MinIO | `127.0.0.1:9000`, HTTP |
 | Model service | `Qwen2.5-VL-3B-Instruct` on a local NVIDIA GPU |
 
-The verified Vane release is published on public PyPI with x86_64 Linux wheels for CPython 3.10, 3.11, and 3.12, all tagged `manylinux_2_28` (glibc 2.28 or newer). This demo was installed and validated with CPython 3.12 in the environment shown above; source builds and other CPU architectures were not validated.
+The verified Vane wheel and its dependencies are installed from PyPI. This demo was installed and validated with CPython 3.12 on the x86_64 Linux environment shown above; source builds and other CPU architectures were not validated.
 
 Install the project-side Ubuntu tools:
 
@@ -23,6 +23,8 @@ Install the project-side Ubuntu tools:
 sudo apt update
 sudo apt install -y git curl python3.12 python3.12-venv
 ```
+
+Install uv using its official installation instructions and confirm that `uv --version` succeeds before continuing.
 
 ## Install from a clean checkout
 
@@ -32,32 +34,32 @@ Run all project commands from the `procurement-compliance-audit` directory.
 
 ```bash
 cd procurement-compliance-audit
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 ```
 
-### 2. Install Vane from public PyPI
+### 2. Install Vane from PyPI
 
 ```bash
-python -m pip install vane-ai
+uv pip install 'vane-ai[openai]==0.1.0'
 ```
 
-No alternate package index is required. The command installs Vane from public PyPI; this demo's `pyproject.toml` pins the validated `vane-ai==0.1.0a1` runtime, and the launcher rejects other runtime identifiers.
+PyPI supplies the exact Vane wheel and its dependencies. The launcher's runtime identity checks reject any other Vane build.
 
 ### 3. Install the demo
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pip check
+uv pip install -r requirements.txt
+uv pip check
 ```
 
 This installs the source in editable mode; `pyproject.toml` is authoritative:
 
 | Dependency | Purpose |
 | --- | --- |
-| `vane-ai==0.1.0a1` | Vane APIs, custom DuckDB, and workers |
+| `vane-ai[openai]==0.1.0` | Vane APIs, engine, AI provider, and workers |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
+| `socksio==1.0.0` | SOCKS proxy support used by the OpenAI HTTP client |
 | `psycopg` | Read and initialize PostgreSQL raw tables |
 | `minio` | Read and initialize raw material objects in MinIO |
 | `rapidocr`, `onnxruntime` | CPU OCR: driver-owned on Local, stateful Actor on Ray |
@@ -66,7 +68,7 @@ This installs the source in editable mode; `pyproject.toml` is authoritative:
 | `pyyaml` | Strict `runtime.yml` loading |
 | `pytest` | Fast tests |
 
-`pip check` must report no broken requirements.
+`uv pip check` must report no broken requirements.
 
 ## Prepare PostgreSQL and MinIO
 
@@ -212,7 +214,7 @@ The checked-in `runtime.yml` defines:
 
 | Setting | Default |
 | --- | --- |
-| Runner | `local` |
+| Runner | `ray` |
 | PostgreSQL raw tables | `procurement_audit_raw.projects`, `suppliers`, `expert_scores`, `evidence_files` |
 | MinIO | `127.0.0.1:9000`, bucket `procurement-compliance-audit-fixtures` |
 | Output directory | `output` |
@@ -222,14 +224,16 @@ The checked-in `runtime.yml` defines:
 The checked-in configuration uses:
 
 ```yaml
-runner: local
+runner: ray
 ```
 
-The checked-in value is `runner: local`; change it to `runner: ray` for the distributed path. Both modes were verified end to end with public `vane-ai==0.1.0a1`, real RapidOCR, and the local Qwen service.
+The checked-in `runner: ray` path was verified end to end on a local Ray runtime with `vane-ai[openai]==0.1.0`, PostgreSQL, MinIO, real RapidOCR, and the local Qwen service. A multi-node target cluster still requires an infrastructure smoke test for shared paths, worker credentials, and capacity. Set `runner: local` only when intentionally using the supported driver-owned fallback.
 
 On Local, the pipeline creates one `EvidenceOcrActor` implementation on the driver, processes every trusted evidence locator once, and attaches the immutable results as `evidence_ocr_json(bucket, object_key)`. It also instantiates the configured model through Vane's public provider API and reuses one async client on the driver. This keeps native ONNX sessions and the async provider client outside LocalRunner subprocess boundaries.
 
 On Ray, `EvidenceOcrActor` is attached as the stateful `evidence_ocr_json(bucket, object_key)` expression and Qwen runs through `vane.ai.prompt`. The OCR engine initializes lazily inside its isolated Actor worker. The launcher sets `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000` unless the operator supplied another value, giving native Ray OCR workers enough time to shut down cleanly.
+
+The pipeline sets `OPENAI_API_KEY` before a local Ray runtime can start. When connecting to an existing or external Ray cluster, provision `OPENAI_API_KEY` on every worker through that cluster's runtime or secret management before launching the demo; changing the driver environment cannot update workers that already exist.
 
 In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per image and `int_evidence_ocr.sql` parses the same materialized JSON. Response validation keeps the `int_conflict_validation_udf.sql` then `int_conflict_facts.sql` shape. Driver-local inputs are staged as temporary Parquet files and Runner results are registered in the driver's DuckDB catalog for the next pure SQL node. Switching Runner changes execution placement, not SQL or output contracts. A real multi-node target cluster still requires its own infrastructure smoke test.
 
@@ -237,10 +241,10 @@ In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per ima
 
 | Symptom | Resolution |
 | --- | --- |
-| `No matching distribution found for vane-ai` | This demo requires CPython 3.12; for the published wheel, confirm x86_64 Linux and glibc 2.28 or newer, then run `python -m pip install vane-ai` against public PyPI |
-| Python/Vane/DuckDB version mismatch | Reactivate `.venv` and reinstall from public PyPI; the launcher reports the current interpreter, prefix, and expected/actual values |
-| Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a Ray cluster with enough CPU, heap, and object-store capacity; this real OCR flow was validated with 8 CPUs and a 2 GiB object store |
-| A direct dependency is missing | Run `python -m pip install -r requirements.txt` and `python -m pip check` |
+| `No matching distribution found for vane-ai` | Confirm CPython 3.12 on x86_64 Linux, then repeat the exact PyPI uv command in installation step 2 |
+| Python/Vane/engine version mismatch | Reactivate `.venv` and repeat the two uv installation steps; the launcher reports the current interpreter, prefix, and expected/actual values |
+| Ray cannot allocate memory or satisfy query demand | Stop stale Ray processes, free host memory, or connect to a target Ray cluster with enough CPU, heap, and object-store capacity |
+| A direct dependency is missing | Repeat installation step 3 and run `uv pip check` |
 | PostgreSQL connection, authentication, or table initialization failure | Check the DSN, database/role, port, and schema/table read/write permissions |
 | MinIO connection, authentication, or object-read failure | Check endpoint, HTTP/TLS, access key, and bucket list/read/write/delete permissions |
 | Qwen health or image request fails | Use the [Qwen guide](../../docs/local-qwen-service.md) to check port, driver, OOM, model name, and proxy settings |
@@ -250,14 +254,13 @@ In both modes, `int_evidence_ocr_udf.sql` calls the same expression once per ima
 
 | Component | Required identifier |
 | --- | --- |
-| Vane distribution metadata (`vane-ai`) | `0.1.0a1` |
-| `vane.__version__` | `0.1.0a1` |
-| DuckDB Python package | `0.1.0a1` |
-| DuckDB engine | `v1.6.0-dev1` |
-| DuckDB source revision | `398033a962` |
+| Vane distribution metadata (`vane-ai`) | `0.1.0` |
+| `vane.__version__` | `0.1.0` |
+| Vane engine | `v1.5.0-vane.b1c745e9c4` |
+| Vane source revision | `0c2adbf409` |
 | OpenAI Python client | `2.45.0` |
 
-The required API surface includes `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.load_provider`, `vane.ai.prompt`, and `duckdb.ray_cxx`. Any identity or API mismatch fails startup instead of silently falling back to ordinary DuckDB. Runtime upgrades must update the launcher and real end-to-end validation together.
+The required API surface includes `vane.func`, `vane.cls`, `vane.attach_function`, `vane.configure`, `vane.ai.load_provider`, `vane.ai.prompt`, and `vane.ray_cxx`. Any identity or API mismatch fails startup instead of silently using an incompatible runtime. Runtime upgrades must update the launcher and real end-to-end validation together.
 
 ## Data, credentials, and privacy
 

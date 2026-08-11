@@ -1,2 +1,2 @@
-# Vane resolves from public PyPI through pyproject.toml; see docs/runbook.md.
+# Runtime dependencies, including Vane, are pinned in pyproject.toml.
 -e .[test]

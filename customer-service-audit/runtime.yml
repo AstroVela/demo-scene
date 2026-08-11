@@ -1,6 +1,6 @@
 version: 1
 # Switch between Local and Ray without changing the relation pipeline.
-runner: local
+runner: ray
 
 # MinIO stores the synthetic call recordings and receives the analysis JSON.
 minio:

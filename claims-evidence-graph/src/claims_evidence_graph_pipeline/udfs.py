@@ -18,6 +18,7 @@ from claims_evidence_graph_pipeline.contracts import (
     TableContract,
     stable_json,
 )
+from claims_evidence_graph_pipeline.runner_workspace import RunnerWorkspace
 
 QUALITY_RULE_VERSION = "photo_quality_v2"
 
@@ -62,7 +63,7 @@ def map_batches_with_backend(
 
 
 def run_batch_udf(
-    conn: Any,
+    workspace: RunnerWorkspace,
     input_table: pa.Table,
     spec: BatchUDFSpec,
     *,
@@ -70,12 +71,18 @@ def run_batch_udf(
     execution_backend: str,
 ) -> pa.Table:
     """Run a standardized batch UDF spec and return its Arrow output table."""
-    return map_batches_with_backend(
-        conn.from_arrow(input_table),
+    input_relation = workspace.stage_table(f"{spec.name}-input", input_table)
+    output_relation = map_batches_with_backend(
+        input_relation,
         spec,
         batch_size=batch_size,
         execution_backend=execution_backend,
-    ).to_arrow_table()
+    )
+    return workspace.materialize_table(
+        spec.name,
+        output_relation,
+        empty_table=spec.output_contract.arrow_table([]),
+    )
 
 
 def laplacian_variance(gray: Image.Image) -> float:

@@ -12,13 +12,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src._common import require_local_relation_runner
+from src._common import batch_udf_options
 from src.multimodal_training_data import (
     decode_payload,
+    parse_args,
     process_audio,
     process_document,
     process_image,
@@ -29,16 +31,25 @@ from src.multimodal_training_data import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-class MultimodalTrainingDataTest(unittest.TestCase):
-    def test_relation_runner_requires_local_fast(self) -> None:
-        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
-        for runner in ("", "local", "ray"):
-            with self.subTest(runner=runner):
-                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
-                    require_local_relation_runner(runner)
+def example_subprocess_env() -> dict[str, str]:
+    env = {
+        **os.environ,
+        "RAY_ADDRESS": "local",
+        "VANE_PROGRESS": "0",
+        "RAY_LOG_TO_DRIVER": "0",
+    }
+    env.pop("VANE_RUNNER", None)
+    return env
 
-    def run_example(self, output_dir: Path, *extra_args: str) -> None:
-        completed = subprocess.run(
+
+class MultimodalTrainingDataTest(unittest.TestCase):
+    def invoke_example(
+        self,
+        output_dir: Path,
+        *extra_args: str,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [
                 sys.executable,
                 str(REPO_ROOT / "src" / "multimodal_training_data.py"),
@@ -47,13 +58,28 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                 *extra_args,
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": "local-fast"},
+            env=env or example_subprocess_env(),
             text=True,
             capture_output=True,
             timeout=90,
             check=False,
         )
+
+    def run_example(self, output_dir: Path, *extra_args: str) -> None:
+        completed = self.invoke_example(output_dir, *extra_args)
         self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
+
+    def test_local_runner_override_is_rejected_before_writing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-multimodal-local-") as tmp_dir:
+            output_dir = Path(tmp_dir) / "multimodal_training_data"
+            env = example_subprocess_env()
+            env["VANE_RUNNER"] = "local"
+
+            completed = self.invoke_example(output_dir, env=env)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires Vane RayRunner", completed.stderr)
+            self.assertFalse((output_dir / "manifest.json").exists())
 
     def test_default_run_writes_release_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-multimodal-") as tmp_dir:
@@ -62,6 +88,8 @@ class MultimodalTrainingDataTest(unittest.TestCase):
 
             manifest = json.loads((output_dir / "manifest.json").read_text())
             self.assertEqual(manifest["raw_record_rows"], 5)
+            self.assertEqual(manifest["runner"], "ray")
+            self.assertEqual(manifest["execution_backend"], "ray_task")
             self.assertEqual(manifest["feature_record_rows"], 5)
             self.assertEqual(manifest["release_rows"], 4)
             self.assertEqual(manifest["rejected_rows"], 1)
@@ -90,10 +118,10 @@ class MultimodalTrainingDataTest(unittest.TestCase):
             self.assertEqual(
                 manifest["execution_backends"],
                 {
-                    "process_audio": None,
-                    "process_document": None,
-                    "process_image": None,
-                    "process_text": None,
+                    "process_audio": "ray_task",
+                    "process_document": "ray_task",
+                    "process_image": "ray_task",
+                    "process_text": "ray_task",
                 },
             )
             self.assertNotIn("embedding", manifest)
@@ -252,7 +280,7 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                     str(copied_root / "output"),
                 ],
                 cwd=copied_root,
-                env={**os.environ, "VANE_RUNNER": "local-fast"},
+                env=example_subprocess_env(),
                 text=True,
                 capture_output=True,
                 timeout=30,
@@ -365,6 +393,20 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                 set(manifest["execution_backends"].values()), {"subprocess_task"}
             )
 
+    def test_ray_task_backend_is_accepted_and_forwarded(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["multimodal_training_data.py", "--execution-backend", "ray_task"],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.execution_backend, "ray_task")
+        self.assertEqual(
+            batch_udf_options("ray_task"),
+            {"execution_backend": "ray_task"},
+        )
+
     def test_cli_rejects_missing_input_and_invalid_batch_size(self) -> None:
         cases = [
             (["--input", "/missing/training-assets.csv"], "does not exist"),
@@ -379,7 +421,7 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                         *extra_args,
                     ],
                     cwd=REPO_ROOT,
-                    env={**os.environ, "VANE_RUNNER": "local-fast"},
+                    env=example_subprocess_env(),
                     text=True,
                     capture_output=True,
                     timeout=30,
@@ -387,26 +429,6 @@ class MultimodalTrainingDataTest(unittest.TestCase):
                 )
                 self.assertEqual(completed.returncode, 2)
                 self.assertIn(expected_error, completed.stderr)
-
-    def test_script_and_docs_keep_the_training_release_boundary(self) -> None:
-        paths = [
-            REPO_ROOT / "src" / "multimodal_training_data.py",
-            REPO_ROOT / "docs" / "multimodal_training_data.en.md",
-            REPO_ROOT / "docs" / "multimodal_training_data.zh-CN.md",
-        ]
-        for path in paths:
-            text = path.read_text(encoding="utf-8")
-            self.assertIn(".read_csv(", text, msg=str(path))
-            self.assertIn(".map_batches(", text, msg=str(path))
-            self.assertIn(".union(", text, msg=str(path))
-            self.assertIn(".write_csv(", text, msg=str(path))
-            self.assertIn(".write_parquet(", text, msg=str(path))
-            self.assertIn("training_release", text, msg=str(path))
-            self.assertIn("rejected_records", text, msg=str(path))
-            self.assertNotIn("stable_embedding", text, msg=str(path))
-            self.assertNotIn("semantic_matches", text, msg=str(path))
-            self.assertNotIn("query_embedding", text, msg=str(path))
-            self.assertNotIn('conn.register("raw_records"', text, msg=str(path))
 
     def test_readmes_link_languages_and_current_entrypoint(self) -> None:
         english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")

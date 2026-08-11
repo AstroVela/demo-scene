@@ -2,33 +2,27 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-在证据进入企业 Agent 之前，先构建可审计的多模态上下文。该流水线解析文档、
-文本、图片和音频资产，将它们与业务需求关联，再通过 SQL 找出证据缺口、主张
-冲突、过期观察和媒体风险。最终产物包括受治理的 Agent 上下文和按优先级排列
-的审核队列；模型执行和检索不在本示例范围内。
+在证据进入企业 Agent 之前，先构建可审计的多模态上下文。该流水线解析文档、文本、图片和音频资产，将它们与业务需求关联，再通过 SQL 找出证据缺口、主张冲突、过期观察和媒体风险。最终产物包括受治理的 Agent 上下文和按优先级排列的审核队列；模型执行和检索不在本示例范围内。
 
 ## Vane Data 重点
 
 - 将场景表和资产目录读取为 Relation，完成校验后通过 SQL 关联。
-- 每个被引用的公开资产只经过一次带类型的 `map_batches` 分支处理，再关联到
-  一个或多个业务案例。
-- 使用 Relation SQL、聚合和 writer 生成证据缺口、主张冲突、受治理上下文
-  和审核队列。
+- 每个被引用的公开资产只经过一次带类型的 `map_batches` 分支处理，再关联到一个或多个业务案例。
+- 使用 Relation SQL、聚合和 writer 生成证据缺口、主张冲突、受治理上下文和审核队列。
 
-默认离线数据由 5 个固定版本的公开文件和 4 个合成案例组成，可稳定复现证据
-缺口、冲突、时效性和审核路径。
+默认离线数据由 5 个固定版本的公开文件和 4 个合成案例组成，可稳定复现证据缺口、冲突、时效性和审核路径。
 
 ## 快速开始
 
-需要 Python 3.10 或更高版本。在当前目录运行：
-
-`requirements.txt` 会从公共 PyPI 安装已验证的 `vane-ai==0.1.0a1`；也可以直接执行 `pip install vane-ai` 安装 Vane。
+已验证环境使用 Python 3.12 和 uv。Vane 0.1.0 及其依赖均从 PyPI 解析。
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
-VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install 'vane-ai==0.1.0'
+uv pip install -r requirements.txt
+uv pip check
+.venv/bin/python src/enterprise_multimodal_agent.py
 ```
 
 预期摘要：
@@ -46,7 +40,7 @@ Output directory: output/enterprise_multimodal_agent
 运行聚焦测试：
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
+.venv/bin/python -m unittest discover -s tests \
   -p 'test_enterprise_multimodal_agent.py' -v
 ```
 
@@ -58,11 +52,9 @@ VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
 - 公开资产目录、来源清单和 5 个资产文件是否与公开快照一致；
 - 必填字段、日期、模态、主键和外键；
 - 主张键值是否成对出现，以及观察日期是否晚于审核日期；
-- 文件哈希和各模态解析规则，包括 UTF-8、SVG 和 WAV 校验，并明确拒绝无效
-  UTF-8 与非正数 WAV 采样率。
+- 文件哈希和各模态解析规则，包括 UTF-8、SVG 和 WAV 校验，并明确拒绝无效 UTF-8 与非正数 WAV 采样率。
 
-只有被证据链接引用的资产会进入 batch UDF。`manifest.json` 中的默认路径使用
-仓库相对路径，不会泄露开发者本机路径。
+只有被证据链接引用的资产会进入 batch UDF。`manifest.json` 中的默认路径使用仓库相对路径，不会泄露开发者本机路径。
 
 ## 输出
 
@@ -94,8 +86,7 @@ VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ```
 
-这是唯一需要联网的操作。上游文件一旦发生变化，校验会直接失败，不会静默
-替换快照。
+这是唯一需要联网的操作。上游文件一旦发生变化，校验会直接失败，不会静默替换快照。
 
 ## 仓库结构
 

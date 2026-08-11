@@ -16,17 +16,26 @@ command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
     echo "Error: $PYTHON_BIN is required but was not found."
     exit 1
 }
+command -v uv >/dev/null 2>&1 || {
+    echo "Error: uv is required but was not found."
+    exit 1
+}
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "==> Creating virtual environment: $VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    uv venv --python "$PYTHON_BIN" "$VENV_DIR"
 else
     echo "==> Reusing virtual environment: $VENV_DIR"
 fi
 
 echo "==> Installing demo dependencies..."
-"$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
-"$VENV_DIR/bin/python" -m pip install -r "$SCRIPT_DIR/requirements.txt"
+uv pip install \
+    --python "$VENV_DIR/bin/python" \
+    'vane-ai[openai]==0.1.0'
+uv pip install \
+    --python "$VENV_DIR/bin/python" \
+    -r "$SCRIPT_DIR/requirements.txt"
+uv pip check --python "$VENV_DIR/bin/python"
 
 echo "==> Running synthetic fixture profile..."
 "$VENV_DIR/bin/claims-evidence-graph-quality-fixtures" \

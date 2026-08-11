@@ -2,7 +2,7 @@
 
 训练资产进入训练任务前，通常需要完成解码、质量检查、授权检查和格式统一。文档、图片、音频和文本的检查方式不同，但下游需要一份稳定的数据契约，才能知道哪些记录可以发布、哪些记录被拒绝，以及拒绝原因是什么。
 
-如果把所有模态塞进同一个 UDF，处理逻辑和输出 schema 很容易纠缠在一起。本示例使用四条独立的 Arrow batch UDF 分支处理不同模态，再通过 Relation `union` 合并成统一的类型化结果。发布门禁只读取公共字段，不需要理解每种媒体的解析过程。
+如果把所有模态塞进同一个 UDF，处理逻辑和输出 schema 很容易纠缠在一起。本示例使用四条独立的 Arrow batch UDF 分支处理不同模态，经 RayRunner 分别物化后合并 Parquet 输出。发布门禁只读取公共字段，不需要理解每种媒体的解析过程。
 
 ## 案例范围
 
@@ -26,13 +26,15 @@ public_sources.csv
 
 ## 初始化
 
-下面的配置对应完整脚本的默认值。`UDF_OPTIONS` 为空时由 Vane 选择 Batch UDF 执行后端；需要固定时，可以传入 `{"execution_backend": "subprocess_task"}` 或对应的 Ray task 配置。
+下面的配置对应完整脚本的默认值。Vane 0.1.0 默认使用 RayRunner。`UDF_OPTIONS` 为空时会选择 `ray_task`；需要固定时，可以传入 `{"execution_backend": "ray_task"}` 或 `{"execution_backend": "subprocess_task"}`。
 
 ```python
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import vane
 
+from src._common import RunnerWorkspace, read_csv_as_strings
 from src.multimodal_training_data import (
     SUPPORTED_MODALITIES,
     TRAINING_FEATURE_SCHEMA,
@@ -48,6 +50,8 @@ BATCH_SIZE = 2
 UDF_OPTIONS = {}
 
 conn = vane.connect()
+workspace_dir = TemporaryDirectory(prefix="vane-multimodal-ray-")
+workspace = RunnerWorkspace(Path(workspace_dir.name), conn)
 ```
 
 ## 输入数据
@@ -68,15 +72,20 @@ conn = vane.connect()
 | `content_base64` | 自定义或合成样例可选的内嵌内容 |
 | `metadata_json` | 模态相关的补充元数据 |
 
-脚本从 Relation reader 开始，并在读取阶段把可空字符串转为空字符串或空 JSON：
+Vane 0.1.0 的 RayRunner 无法序列化 CSV scan，因此脚本先用 Arrow 将每列按字符串读取、暂存为 Parquet，再在 Relation 边界把可空字符串转为空字符串或空 JSON：
 
 ```python
 input_path = validate_input_path(INPUT_PATH)
-input_relation = conn.read_csv(str(input_path), header=True)
+input_relation = workspace.stage_table(
+    "input-assets",
+    read_csv_as_strings(input_path),
+)
 raw_assets_rel = project_raw_assets(input_relation)
 
-raw_assets_rel.order("record_id").to_table("raw_assets")
-raw_assets = conn.sql("select * from raw_assets")
+raw_assets = workspace.materialize_view(
+    "raw_assets",
+    raw_assets_rel.order("record_id"),
+)
 modalities = validate_modalities(raw_assets)
 ```
 
@@ -232,30 +241,31 @@ stage_functions = {
     "text": "process_text_batch",
 }
 
-relations = []
+branch_paths = []
 for modality in SUPPORTED_MODALITIES:
     source = raw_assets.filter(
         f"modality = '{modality}'"
     ).order("record_id")
-    relations.append(
-        source.map_batches(
-            importable_batch_function(stage_functions[modality]),
-            schema=TRAINING_FEATURE_SCHEMA,
-            batch_size=BATCH_SIZE,
-            **UDF_OPTIONS,
+    branch_paths.append(
+        workspace.write_relation(
+            f"process-{modality}",
+            source.map_batches(
+                importable_batch_function(stage_functions[modality]),
+                schema=TRAINING_FEATURE_SCHEMA,
+                batch_size=BATCH_SIZE,
+                **UDF_OPTIONS,
+            ),
         )
     )
 
-features_rel = relations[0]
-for relation in relations[1:]:
-    features_rel = features_rel.union(relation)
-
-features_rel.order(
-    "modality, record_id"
-).to_table("feature_records")
+features_rel = conn.read_parquet([str(path) for path in branch_paths])
+feature_records = workspace.materialize_view(
+    "feature_records",
+    features_rel.order("modality, record_id"),
+)
 ```
 
-显式分支允许每个处理函数独立测试或替换。所有分支声明相同的 `TRAINING_FEATURE_SCHEMA`，因此 `union` 后仍是一张类型稳定的 Relation。
+显式分支允许每个处理函数独立测试或替换。所有分支声明相同的 `TRAINING_FEATURE_SCHEMA`，因此多文件 Parquet 扫描可以在不使用分布式 `UNION` 的情况下生成类型稳定的 Relation。
 
 公共字段包括 source、授权、正文、SHA-256、字节数、token 数、质量分、发布结论和风险标记。两列保留复杂类型：
 
@@ -277,13 +287,12 @@ rejected_records_rel = feature_records.filter(
     "decision = 'rejected'"
 ).order("quality_score, modality, record_id")
 
-conn.sql("drop table if exists training_release")
-training_release_rel.to_table("training_release")
-training_release = conn.sql("select * from training_release")
-
-conn.sql("drop table if exists rejected_records")
-rejected_records_rel.to_table("rejected_records")
-rejected_records = conn.sql("select * from rejected_records")
+training_release = workspace.materialize_view(
+    "training_release", training_release_rel
+)
+rejected_records = workspace.materialize_view(
+    "rejected_records", rejected_records_rel
+)
 ```
 
 模态汇总继续保留为 Relation 聚合：
@@ -293,16 +302,18 @@ modality_summary_rel = feature_records.aggregate(
     """
     modality,
     count(*) as records,
-    sum(byte_size) as total_bytes,
+    cast(sum(byte_size) as bigint) as total_bytes,
     round(avg(quality_score), 3) as avg_quality_score,
-    sum(case when decision = 'accepted' then 1 else 0 end) as accepted,
-    sum(case when decision = 'rejected' then 1 else 0 end) as rejected
+    cast(sum(case when decision = 'accepted' then 1 else 0 end) as bigint)
+      as accepted,
+    cast(sum(case when decision = 'rejected' then 1 else 0 end) as bigint)
+      as rejected
     """
 ).order("modality")
 
-conn.sql("drop table if exists modality_summary")
-modality_summary_rel.to_table("modality_summary")
-modality_summary = conn.sql("select * from modality_summary")
+modality_summary = workspace.materialize_view(
+    "modality_summary", modality_summary_rel
+)
 ```
 
 默认汇总结果：
@@ -324,14 +335,18 @@ modality_summary = conn.sql("select * from modality_summary")
 
 ## 写出产物
 
-所有表格结果通过 Relation writer 写出：
+所有表格结果都由 RayRunner 执行。Parquet 产物使用 Relation writer；`workspace.write_csv` 会新建一条 Ray 投影，再通过 Arrow 写出 CSV：
 
 ```python
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 feature_records.write_parquet(str(OUTPUT_DIR / "feature_records.parquet"))
 training_release.write_parquet(str(OUTPUT_DIR / "training_release.parquet"))
-rejected_records.write_csv(str(OUTPUT_DIR / "rejected_records.csv"))
-modality_summary.write_csv(str(OUTPUT_DIR / "modality_summary.csv"))
+workspace.write_csv(
+    rejected_records, OUTPUT_DIR / "rejected_records.csv"
+)
+workspace.write_csv(
+    modality_summary, OUTPUT_DIR / "modality_summary.csv"
+)
 ```
 
 | 文件 | 用途 |
@@ -349,7 +364,7 @@ Parquet 保留 `risk_flags` 列表和 `media_metrics` 结构体。拒绝记录�
 教程中的 Relation 和 Batch UDF 阶段都包含在同一个可执行脚本中：
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py
+.venv/bin/python src/multimodal_training_data.py
 ```
 
 默认运行输出：
@@ -364,24 +379,24 @@ Output directory: output/multimodal_training_data
 需要复现原来的纯合成错误样本时运行：
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py \
+.venv/bin/python src/multimodal_training_data.py \
   --input data/multimodal_training_data/synthetic_training_assets.csv
 ```
 
-使用 `--input` 可以替换资产清单，`--batch-size` 控制各模态 UDF 的输入批次，`--execution-backend` 可以显式选择 `subprocess_task` 或 `ray_task`，`--output-dir` 用于修改产物目录。脚本中的命名表位于客户端连接，因此必须使用 `local-fast` Relation runner；task 执行后端只影响四条 Python UDF 分支。
+使用 `--input` 可以替换资产清单，`--batch-size` 控制各模态 UDF 的输入批次，`--execution-backend` 可以选择 `auto`、`ray_task` 或 `subprocess_task`，`--output-dir` 用于修改产物目录。Vane 0.1.0 默认的 RayRunner 会提供 `ray_task` 所需的 query 和 block-stream 上下文；脚本的 Parquet 工作区会在各阶段保留这些上下文。
 
 三条命令对应不同目的：
 
 | 命令 | 是否联网 | 用途 |
 | --- | --- | --- |
-| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py` | 否 | 默认公开快照的数据处理与发布 |
+| `.venv/bin/python src/multimodal_training_data.py` | 否 | 默认公开快照的数据处理与发布 |
 | `.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh` | 是 | 重新下载来源并验证哈希 |
-| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | 否 | 回归无效图片和缺少授权等错误路径 |
+| `.venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | 否 | 回归无效图片和缺少授权等错误路径 |
 
 聚焦验证：
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_multimodal_training_data
+.venv/bin/python -m unittest -v tests.test_multimodal_training_data
 ```
 
 ## 当前范围

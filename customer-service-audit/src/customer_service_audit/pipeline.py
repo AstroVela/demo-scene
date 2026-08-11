@@ -10,12 +10,11 @@ import sys
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Sequence
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from .call_ai import build_call_ai_relation
+from .call_ai import build_call_ai_relation, configure_provider_credentials
 from .config import DEFAULT_CONFIG_PATH, RuntimeConfig, load_runtime_config
 from .minio_store import MinioStore
 from .output_writer import publish_analysis_json
@@ -38,6 +37,9 @@ CALL_INPUT_STAGE = SQL_ROOT / "intermediate/int_call_inputs.sql"
 CALL_PROBE_UDF_STAGE = SQL_ROOT / "intermediate/int_call_probe_udf.sql"
 CALL_FACT_STAGE = SQL_ROOT / "intermediate/int_call_facts.sql"
 CALL_TRANSCRIPT_UDF_STAGE = SQL_ROOT / "intermediate/int_call_transcript_udf.sql"
+TRANSCRIPT_QUALITY_UDF_STAGE = (
+    SQL_ROOT / "intermediate/int_transcript_quality_udf.sql"
+)
 TRANSCRIPT_FACT_STAGE = SQL_ROOT / "intermediate/int_transcript_facts.sql"
 ANALYSIS_VALIDATION_INPUT_STAGE = (
     SQL_ROOT / "intermediate/int_analysis_validation_inputs.sql"
@@ -51,6 +53,7 @@ SQL_FINAL_STAGES = (
 )
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CREATE_RELATION_AS = re.compile(
+    r"(?:--[^\r\n]*(?:\r?\n|$))*\s*"
     r"create\s+or\s+replace\s+(?:table|view)\s+"
     r"(?P<target>[A-Za-z_][A-Za-z0-9_]*)\s+as\s+(?P<query>.+)",
     re.IGNORECASE | re.DOTALL,
@@ -205,7 +208,7 @@ def probe_runtime(config: RuntimeConfig) -> None:
 
 
 def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
-    """Attach all SQL-callable Vane functions to the active connection."""
+    """Attach functions used by Runner-executed SQL to its connection."""
 
     for spec in stateless_udf_specs(build_minio_udfs(config.minio)):
         vane.attach_function(
@@ -215,11 +218,19 @@ def attach_runtime_functions(connection: Any, config: RuntimeConfig) -> None:
             parameters=list(spec.parameters),
             replace=True,
         )
+
+    def transcript_quality_for_run(transcript_json: str) -> str:
+        return transcript_quality_json(
+            transcript_json,
+            config.asr.min_text_chars,
+        )
+
     vane.attach_function(
-        transcript_quality_json,
+        transcript_quality_for_run,
         connection=connection,
         alias="transcript_quality_json",
-        parameters=["VARCHAR", "INTEGER"],
+        parameters=["VARCHAR"],
+        return_dtype="VARCHAR",
         replace=True,
     )
     vane.attach_function(
@@ -246,7 +257,7 @@ def attach_local_asr_lookup(
 ) -> None:
     """Run native ASR on the driver and expose immutable results as a task UDF."""
 
-    locators = driver_connection.sql(
+    locators = driver_connection.execute(
         "select cast(bucket as varchar), cast(object_key as varchar) "
         "from int_call_facts "
         "where audio_usable "
@@ -294,7 +305,7 @@ def _execute_runner_sql_file(
 
     for source_name in source_relations:
         name = _safe_identifier(source_name)
-        table = connection.sql(f"select * from {name}").to_arrow_table()
+        table = connection.execute(f"select * from {name}").to_arrow_table()
         workspace.relation_from_table(
             runner_connection,
             name,
@@ -323,9 +334,10 @@ def _relation_rows(
     connection: Any,
     relation_name: str,
 ) -> list[dict[str, Any]]:
-    relation = connection.sql(f"select * from {_safe_identifier(relation_name)}")
-    columns = list(relation.columns)
-    return [dict(zip(columns, row)) for row in relation.fetchall()]
+    table = connection.execute(
+        f"select * from {_safe_identifier(relation_name)}"
+    ).to_arrow_table()
+    return table.to_pylist()
 
 
 def _create_call_ai_table(
@@ -361,10 +373,14 @@ def run_pipeline(
 ) -> int:
     """Execute the complete DAG and publish per-call analysis JSON to MinIO."""
 
+    configure_provider_credentials(config.ai)
     # The configured backend changes execution only; the relation code is shared.
     vane.configure(runner=config.runner)
     # Fail before computation if MinIO is unavailable.
     probe_runtime(config)
+    # Start Ray before driver connections and attached UDFs enlarge the process.
+    # Provider credentials must already be present so local workers inherit them.
+    vane.get_or_create_runner()
     run_started_at = datetime.now(timezone.utc)
     call_rows = list_call_rows(config)
 
@@ -372,8 +388,8 @@ def run_pipeline(
         prefix=f"customer-service-audit-{config.runner}-"
     ) as workspace_root:
         workspace = RunnerWorkspace(Path(workspace_root))
-        connection = duckdb.connect()
-        runner_connection = duckdb.connect()
+        connection = vane.connect()
+        runner_connection = vane.connect()
         try:
             # Register the MinIO recording snapshot and secret-free run settings.
             register_or_replace_table(
@@ -416,6 +432,14 @@ def run_pipeline(
                 source_relations=("int_call_facts",),
                 materializer=materialize_relation,
             )
+            _execute_runner_sql_file(
+                connection,
+                runner_connection,
+                TRANSCRIPT_QUALITY_UDF_STAGE,
+                workspace=workspace,
+                source_relations=("int_call_transcript_udf",),
+                materializer=materialize_relation,
+            )
             _execute_sql_file(connection, TRANSCRIPT_FACT_STAGE)
             # Analyze every usable transcript through the real AI boundary.
             _create_call_ai_table(
@@ -435,7 +459,7 @@ def run_pipeline(
             )
             for sql_path in SQL_FINAL_STAGES:
                 _execute_sql_file(connection, sql_path)
-            rows = connection.sql(
+            rows = connection.execute(
                 "select * from call_audit_report order by call_id"
             ).to_arrow_table().to_pylist()
         finally:

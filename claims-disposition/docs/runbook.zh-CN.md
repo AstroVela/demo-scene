@@ -10,12 +10,12 @@
 | --- | --- |
 | 操作系统 | Ubuntu 24.04 x86_64，glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0a1` |
+| Vane | `vane-ai[openai]==0.1.0` |
 | PostgreSQL | `127.0.0.1:5432` |
 | MinIO | `127.0.0.1:9000` |
 | 模型服务 | NVIDIA CUDA GPU 上的 Qwen2.5-VL-3B，监听 `127.0.0.1:8001` |
 
-已验证的 Vane 正式发布包位于公共 PyPI，提供面向 CPython 3.10、3.11 和 3.12 的 x86_64 Linux wheel，平台标签均为 `manylinux_2_28`（glibc 2.28 或更新）。本 Demo 仍使用上表中的 CPython 3.12 完成安装与验证；源码构建和其他 CPU 架构未验证。
+已验证的 Vane wheel 及其依赖均从 PyPI 安装。本 Demo 在上表所示的 CPython 3.12 x86_64 Linux 环境完成安装与验证；源码构建和其他 CPU 架构未验证。
 
 安装项目侧 Ubuntu 工具：
 
@@ -23,6 +23,8 @@
 sudo apt update
 sudo apt install -y git curl python3.12 python3.12-venv
 ```
+
+按照 uv 官方安装说明安装 uv，并确认 `uv --version` 可以正常执行。
 
 PostgreSQL、MinIO 和 Qwen 是外部服务。Launcher 只连接它们，不会安装、启动、停止或重启这些服务。
 
@@ -34,34 +36,34 @@ PostgreSQL、MinIO 和 Qwen 是外部服务。Launcher 只连接它们，不会�
 
 ```bash
 cd claims-disposition
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 ```
 
 虚拟环境可以使用其他目录名。Launcher 校验当前解释器和包来源，不要求目录必须叫 `.venv`。
 
-### 2. 从公共 PyPI 安装 Vane
+### 2. 从 PyPI 安装 Vane
 
 ```bash
-python -m pip install vane-ai
+uv pip install 'vane-ai[openai]==0.1.0'
 ```
 
-不再需要备用 package index。上述命令直接从公共 PyPI 安装 Vane；本 Demo 的 `pyproject.toml` 固定已验证的 `vane-ai==0.1.0a1`，Launcher 会拒绝未经验证的 Vane 或 custom DuckDB build。
+PyPI 提供精确的 Vane wheel 及其依赖。Launcher 的运行时标识校验会拒绝其他 Vane build。
 
 ### 3. 安装 Demo
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pip check
+uv pip install -r requirements.txt
+uv pip check
 ```
 
 `requirements.txt` 会以 editable 方式安装源码和 test extra，依赖以 `pyproject.toml` 为准：
 
 | 依赖 | 用途 |
 | --- | --- |
-| `vane-ai==0.1.0a1` | Vane API、custom DuckDB 和 worker |
+| `vane-ai[openai]==0.1.0` | Vane API、引擎、AI provider 和 worker |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
+| `socksio==1.0.0` | OpenAI HTTP client 使用的 SOCKS 代理支持 |
 | `minio` | 对象读写和 SHA-256 UDF |
 | `psycopg[binary]` | PostgreSQL 输入、Fixture 和原子发布 |
 | `rapidocr`、`onnxruntime` | CPU OCR：Local 由 Driver 持有，Ray 使用有状态 Actor |
@@ -71,7 +73,7 @@ python -m pip check
 | `pytz` | 稳定生成 Fixture 时间 |
 | `pytest` | Fast tests |
 
-`pip check` 必须输出 `No broken requirements found`。
+`uv pip check` 不得报告缺失或不兼容的依赖。
 
 ## 准备外部服务
 
@@ -157,7 +159,7 @@ python -m pytest tests/fast -q
 
 | 配置项 | 默认值 |
 | --- | --- |
-| Runner | `local` |
+| Runner | `ray` |
 | PostgreSQL DSN | `postgresql://vane_insight:***@127.0.0.1:5432/vane_insight` |
 | 原始 Relation | `claims_disposition_raw.claims` |
 | 输出 Relation | `claims_disposition_output.claim_disposition` |
@@ -165,15 +167,17 @@ python -m pytest tests/fast -q
 | OCR | RapidOCR CPU；必需字段 `claim_number`、`claimant_name`、`loss_date`；最低平均置信度 `0.70` |
 | AI | OpenAI provider；`http://127.0.0.1:8001/v1`；模型 `Qwen2.5-VL-3B-Instruct`；并发 `1`；超时 `120` 秒 |
 
-仓库默认使用 `runner: local`，`runner: ray` 用于选择分布式路径。两种模式均已使用公共 `vane-ai==0.1.0a1`、真实 RapidOCR 和本地 Qwen 服务完成端到端验证。
+仓库默认的 `runner: ray` 路径已在本地 Ray runtime 上使用 `vane-ai[openai]==0.1.0`、PostgreSQL、MinIO、真实 RapidOCR 和本地 Qwen 服务完成端到端验证。真实多节点目标集群仍需针对共享路径、worker 凭据和资源容量执行基础设施 smoke test。仅在明确需要 Driver 持有的受支持回退路径时设置 `runner: local`。
 
 Local 模式下，Pipeline 在 Driver 上创建一份 `DocumentOcrActor` 实现，对每个合格证明文档 locator 执行一次，再将不可变结果挂载为 `document_ocr_json(bucket, object_key)`。模型则通过 Vane 公共 provider API 实例化，并在 Driver 上复用一个异步 client。这样原生 ONNX session 与异步 provider client 不会跨越 LocalRunner 的 subprocess 边界。
 
 Ray 模式下，`DocumentOcrActor` 挂载为有状态 `document_ocr_json(bucket, object_key)` 表达式，Qwen 通过 `vane.ai.prompt` 执行。OCR 引擎在隔离的 Actor worker 内延迟初始化。Launcher 还会在操作者没有显式设置时使用 `VANE_UDF_UNREGISTER_TIMEOUT_MS=60000`，为 Ray 原生 OCR worker 留出足够的清理时间。
 
+Pipeline 会在本地 Ray runtime 启动前设置 `OPENAI_API_KEY`。连接已有或外部 Ray 集群时，必须在启动 Demo 前通过集群的 runtime 或 secret management 为每个 worker 配置 `OPENAI_API_KEY`；修改 Driver 环境无法更新已经存在的 worker。
+
 两种模式下，`int_claim_document_ocr_udf.sql` 都对每份合格文档调用相同表达式，每个 `*_udf.sql` 文件也仍是直接交给 Runner 的投影；后续纯 SQL 解析、关联、分类或聚合相同的物化合同。Driver 输入会临时落为 Parquet，结果注册回 Driver 的 DuckDB catalog。切换 Runner 只改变执行位置，不改变 SQL 与输出合同。
 
-加载器会校验 YAML 结构、SQL identifier、loopback URL、必需值和数值范围。诊断不会打印完整 PostgreSQL DSN、MinIO secret 或 AI key。当 AI URL 是 loopback 地址时，Launcher 会清理 HTTP proxy 变量并补充 `NO_PROXY`/`no_proxy`。
+加载器会校验 YAML 结构、SQL identifier、loopback URL、必需值和数值范围。诊断不会打印完整 PostgreSQL DSN、MinIO secret 或 AI key。当 AI URL 是 loopback 地址时，Launcher 会补充 `NO_PROXY`/`no_proxy`，并保留远程依赖所需的 proxy 配置。
 
 ## 数据合同
 
@@ -218,11 +222,11 @@ Writer 会在打开发布事务前校验九列、类型、枚举、置信度和�
 
 | 现象 | 处理方式 |
 | --- | --- |
-| `No matching distribution found for vane-ai` | 本 Demo 要求 CPython 3.12；使用已发布 wheel 时请确认 x86_64 Linux 和 glibc 2.28 或更新，然后对公共 PyPI 执行 `python -m pip install vane-ai` |
-| Python/Vane/DuckDB 版本不匹配 | 重新激活项目环境并从公共 PyPI 重装；Launcher 会输出解释器、prefix、expected/actual 和安装命令 |
-| Ray 无法分配内存或满足 query demand | 停止遗留 Ray 进程、释放宿主机内存，或连接具备足够 CPU、heap 和 object store 的 Ray 集群；本次真实 OCR 验证使用 8 CPU 和 2 GiB object store |
-| Vane 或 DuckDB 指向当前环境之外 | 清除继承的 `PYTHONPATH`，激活 `.venv`，重新执行两步安装 |
-| 缺少直接依赖 | 执行 `python -m pip install -r requirements.txt` 和 `python -m pip check` |
+| `No matching distribution found for vane-ai` | 确认使用 CPython 3.12 x86_64 Linux，然后重新执行安装步骤 2 中完整的 PyPI uv 命令 |
+| Python/Vane/引擎版本不匹配 | 重新激活项目环境并执行两步 uv 安装；Launcher 会输出解释器、prefix、expected/actual 和精确安装命令 |
+| Ray 无法分配内存或满足 query demand | 停止遗留 Ray 进程、释放宿主机内存，或连接具备足够 CPU、heap 和 object store 的目标 Ray 集群 |
+| Vane 指向当前环境之外 | 清除继承的 `PYTHONPATH`，激活 `.venv`，重新执行两步安装 |
+| 缺少直接依赖 | 重新执行安装步骤 3，再运行 `uv pip check` |
 | PostgreSQL 连接或鉴权失败 | 检查 endpoint、database、role、密码，以及 schema/table 创建和写入权限 |
 | MinIO 连接或鉴权失败 | 检查 endpoint、凭据、HTTP/TLS 模式，以及 bucket create/list/read/write/delete 权限 |
 | Qwen health、模型名或图片请求失败 | 按照[本地 Qwen 指南](../../docs/local-qwen-service.zh.md)检查 driver、OOM、端口、served name、模型下载和代理 |
@@ -233,14 +237,13 @@ Writer 会在打开发布事务前校验九列、类型、枚举、置信度和�
 
 | 组件 | 必需标识 |
 | --- | --- |
-| Vane distribution metadata（`vane-ai`） | `0.1.0a1` |
-| `vane.__version__` | `0.1.0a1` |
-| DuckDB Python package | `0.1.0a1` |
-| DuckDB engine | `v1.6.0-dev1` |
-| DuckDB source revision | `398033a962` |
+| Vane distribution metadata（`vane-ai`） | `0.1.0` |
+| `vane.__version__` | `0.1.0` |
+| Vane engine | `v1.5.0-vane.b1c745e9c4` |
+| Vane source revision | `0c2adbf409` |
 | OpenAI Python client | `2.45.0` |
 
-Launcher 同时要求 `vane.func`、`vane.cls`、`vane.attach_function`、`vane.configure`、`vane.ai.load_provider`、`vane.ai.prompt` 和 `duckdb.ray_cxx`。任一不匹配都会明确失败，不会静默回退到普通 DuckDB。
+Launcher 同时要求 `vane.func`、`vane.cls`、`vane.attach_function`、`vane.configure`、`vane.ai.load_provider`、`vane.ai.prompt` 和 `vane.ray_cxx`。任一不匹配都会明确失败，不会静默使用不兼容的运行时。
 
 ## 数据、凭据和隐私
 
