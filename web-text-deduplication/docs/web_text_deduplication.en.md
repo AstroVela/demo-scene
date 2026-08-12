@@ -85,7 +85,7 @@ band_paths = [
 band_memberships = conn.read_parquet([str(path) for path in band_paths])
 ~~~
 
-The pipeline verifies that every non-empty fingerprint produces exactly eight membership rows. `collision_buckets.csv` exposes member counts, domains, and the potential pair expansion for each colliding bucket. These small diagnostic lists are grouped deterministically on the driver from Ray-produced membership rows, then staged back to Parquet; the data pipeline remains on RayRunner.
+The pipeline verifies that every non-empty fingerprint produces exactly eight membership rows. `collision_buckets.csv` exposes member counts, domains, and the potential pair expansion for each colliding bucket. Ray/SQL filters singleton buckets first. Only memberships from colliding buckets are collected for deterministic grouping on the driver and staged back to Parquet; the rest of the data pipeline remains on RayRunner.
 
 Before the self-join, the script sums `member_count * (member_count - 1) / 2` across buckets. If `candidate_pair_slots` exceeds `--max-candidate-pair-slots`, execution fails before creating the pair relation. The default budget is 1,000,000.
 
@@ -176,8 +176,12 @@ workspace.write_csv(
     collision_buckets, output_dir / "collision_buckets.csv"
 )
 workspace.write_csv(domain_summary, output_dir / "domain_summary.csv")
-fingerprinted.write_parquet(str(output_dir / "fingerprinted.parquet"))
-representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
+workspace.write_parquet(
+    fingerprinted, output_dir / "fingerprinted.parquet"
+)
+workspace.write_parquet(
+    representatives, output_dir / "deduped_documents.parquet"
+)
 ~~~
 
 | File | Purpose |

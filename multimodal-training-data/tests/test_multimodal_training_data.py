@@ -84,6 +84,12 @@ class MultimodalTrainingDataTest(unittest.TestCase):
     def test_default_run_writes_release_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-multimodal-") as tmp_dir:
             output_dir = Path(tmp_dir) / "multimodal_training_data"
+            output_dir.mkdir(parents=True)
+            pq.write_table(
+                pa.table({"stale": [True]}),
+                output_dir / "feature_records.parquet",
+            )
+            self.run_example(output_dir)
             self.run_example(output_dir)
 
             manifest = json.loads((output_dir / "manifest.json").read_text())

@@ -4,15 +4,18 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 from warcio.statusandheaders import StatusAndHeaders
 from warcio.warcwriter import WARCWriter
 
+from src._common import RunnerWorkspace
 from src._common_crawl import (
     CommonCrawlRangeTask,
     ExtractHtmlBlocksBatch,
@@ -25,6 +28,7 @@ from scripts.prepare_web_text_deduplication_data import (
     DEFAULT_METADATA_OUTPUT,
     DEFAULT_OUTPUT,
     DEFAULT_RECORD_MANIFEST,
+    file_sha256,
     run as run_preparation,
 )
 
@@ -188,6 +192,29 @@ class CommonCrawlSourceTest(unittest.TestCase):
         self.assertEqual(DEFAULT_RECORD_MANIFEST, workspace / "common_crawl_records.csv")
         self.assertEqual(DEFAULT_OUTPUT, workspace / "common_crawl_blocks.parquet")
         self.assertEqual(DEFAULT_METADATA_OUTPUT, workspace / "common_crawl_snapshot.json")
+
+    def test_snapshot_writer_replaces_a_dataset_with_one_parquet_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-web-snapshot-write-") as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "snapshot.parquet"
+            output.mkdir()
+            pq.write_table(
+                pa.table({"doc_id": ["stale"]}),
+                output / "part-0.parquet",
+            )
+            workspace = RunnerWorkspace(root / "workspace", None)
+
+            workspace.write_parquet_table(
+                pa.table({"doc_id": ["fresh-1", "fresh-2"]}),
+                output,
+            )
+
+            self.assertTrue(output.is_file())
+            self.assertEqual(
+                pq.read_table(output).column("doc_id").to_pylist(),
+                ["fresh-1", "fresh-2"],
+            )
+            self.assertEqual(len(file_sha256(output)), 64)
 
     def test_preparation_requires_explicit_terms_acknowledgement(self) -> None:
         env = os.environ.copy()

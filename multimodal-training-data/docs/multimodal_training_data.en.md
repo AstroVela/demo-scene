@@ -337,8 +337,12 @@ RayRunner evaluates every tabular output. Parquet artifacts use Relation writers
 
 ```python
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-feature_records.write_parquet(str(OUTPUT_DIR / "feature_records.parquet"))
-training_release.write_parquet(str(OUTPUT_DIR / "training_release.parquet"))
+workspace.write_parquet(
+    feature_records, OUTPUT_DIR / "feature_records.parquet"
+)
+workspace.write_parquet(
+    training_release, OUTPUT_DIR / "training_release.parquet"
+)
 workspace.write_csv(
     rejected_records, OUTPUT_DIR / "rejected_records.csv"
 )

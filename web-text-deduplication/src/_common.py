@@ -5,6 +5,7 @@ import csv
 import json
 import re
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pyarrow as pa
@@ -51,6 +52,18 @@ def read_csv_as_strings(path: Path) -> pa.Table:
     )
 
 
+def _replace_path(staged_path: Path, target_path: Path) -> None:
+    previous_path = staged_path.parent / "previous"
+    if target_path.exists():
+        target_path.replace(previous_path)
+    try:
+        staged_path.replace(target_path)
+    except BaseException:
+        if previous_path.exists():
+            previous_path.replace(target_path)
+        raise
+
+
 class RunnerWorkspace:
     """Stage driver inputs and RayRunner results as Parquet scans."""
 
@@ -75,6 +88,24 @@ class RunnerWorkspace:
         if not path.exists():
             pq.write_table(relation.limit(0).to_arrow_table(), path)
         return path
+
+    def write_parquet(self, relation: Any, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(
+            prefix=f".{path.name}.tmp-", dir=path.parent
+        ) as temp_root:
+            staged_path = Path(temp_root) / "new"
+            relation.write_parquet(str(staged_path))
+            _replace_path(staged_path, path)
+
+    def write_parquet_table(self, table: pa.Table, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(
+            prefix=f".{path.name}.tmp-", dir=path.parent
+        ) as temp_root:
+            staged_path = Path(temp_root) / "new"
+            pq.write_table(table, staged_path)
+            _replace_path(staged_path, path)
 
     def materialize(self, name: str, relation: Any) -> Any:
         return self.stage_table(name, relation.project("*").to_arrow_table())

@@ -85,7 +85,7 @@ band_paths = [
 band_memberships = conn.read_parquet([str(path) for path in band_paths])
 ~~~
 
-流水线会检查每条非空指纹是否正好生成 8 行 band 归属记录。`collision_buckets.csv` 列出每个碰撞桶的成员数、域名和潜在文档对数量。少量诊断列表会从 Ray 生成的归属记录中在 Driver 端做确定性分组，再写回 Parquet；数据流水线仍由 RayRunner 执行。
+流水线会检查每条非空指纹是否正好生成 8 行 band 归属记录。`collision_buckets.csv` 列出每个碰撞桶的成员数、域名和潜在文档对数量。Ray/SQL 会先过滤单例桶，只有碰撞桶的成员记录会被收集到 Driver 端做确定性分组，再写回 Parquet；其余数据处理仍由 RayRunner 执行。
 
 自连接之前，脚本先汇总所有碰撞桶的 `member_count * (member_count - 1) / 2`。如果 `candidate_pair_slots` 超过 `--max-candidate-pair-slots`，任务会在创建候选 Relation 前失败。默认预算为 1,000,000。
 
@@ -176,8 +176,12 @@ workspace.write_csv(
     collision_buckets, output_dir / "collision_buckets.csv"
 )
 workspace.write_csv(domain_summary, output_dir / "domain_summary.csv")
-fingerprinted.write_parquet(str(output_dir / "fingerprinted.parquet"))
-representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
+workspace.write_parquet(
+    fingerprinted, output_dir / "fingerprinted.parquet"
+)
+workspace.write_parquet(
+    representatives, output_dir / "deduped_documents.parquet"
+)
 ~~~
 
 | 文件 | 内容 |

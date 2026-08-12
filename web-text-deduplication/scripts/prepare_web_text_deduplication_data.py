@@ -152,8 +152,10 @@ def _run_with_workspace(
     if block_rows == 0:
         raise RuntimeError("Common Crawl extraction produced zero text blocks")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    blocks.write_parquet(str(output_path))
+    workspace.write_parquet_table(
+        blocks.project("*").to_arrow_table(),
+        output_path,
+    )
 
     source_rows = relation_row_count(raw_records)
     source_rows_with_blocks = int(

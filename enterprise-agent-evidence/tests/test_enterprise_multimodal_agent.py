@@ -84,6 +84,12 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
     def test_default_artifact_contract_uses_real_multimodal_assets(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-enterprise-context-") as tmp_dir:
             output_dir = Path(tmp_dir) / "enterprise_multimodal_agent"
+            output_dir.mkdir(parents=True)
+            pq.write_table(
+                pa.table({"stale": [True]}),
+                output_dir / "asset_features.parquet",
+            )
+            self.run_example(output_dir)
             self.run_example(output_dir)
 
             manifest = json.loads((output_dir / "manifest.json").read_text())

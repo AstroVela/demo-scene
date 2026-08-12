@@ -190,9 +190,15 @@ Default results:
 RayRunner evaluates every output. Parquet artifacts use Relation writers; `workspace.write_csv` starts a fresh Ray projection and writes its Arrow result as review-friendly CSV:
 
 ~~~python
-agent_context.write_parquet(str(OUTPUT_DIR / "agent_context.parquet"))
-asset_features.write_parquet(str(OUTPUT_DIR / "asset_features.parquet"))
-evidence_features.write_parquet(str(OUTPUT_DIR / "evidence_features.parquet"))
+workspace.write_parquet(
+    agent_context, OUTPUT_DIR / "agent_context.parquet"
+)
+workspace.write_parquet(
+    asset_features, OUTPUT_DIR / "asset_features.parquet"
+)
+workspace.write_parquet(
+    evidence_features, OUTPUT_DIR / "evidence_features.parquet"
+)
 workspace.write_csv(evidence_gaps, OUTPUT_DIR / "evidence_gaps.csv")
 workspace.write_csv(
     evidence_conflicts, OUTPUT_DIR / "evidence_conflicts.csv"

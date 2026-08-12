@@ -605,6 +605,22 @@ def build_collision_buckets_table(band_memberships: Any) -> pa.Table:
     )
 
 
+def colliding_band_memberships_relation(conn: Any) -> Any:
+    return conn.sql(
+        """
+        with collision_keys as (
+          select band_index, lsh_band
+          from band_memberships
+          group by band_index, lsh_band
+          having count(*) > 1
+        )
+        select m.band_index, m.lsh_band, m.doc_id, m.domain
+        from band_memberships m
+        join collision_keys c using (band_index, lsh_band)
+        """
+    )
+
+
 def relation_row_count(rel: Any) -> int:
     row = rel.aggregate("count(*) as row_count").fetchone()
     return int(row[0])
@@ -895,10 +911,22 @@ def write_artifacts(
     }
     for name, relation in csv_outputs.items():
         workspace.write_csv(relation, output_dir / f"{name}.csv")
-    documents.write_parquet(str(output_dir / "source_blocks.parquet"))
-    fingerprinted.write_parquet(str(output_dir / "fingerprinted.parquet"))
-    scored_pairs.write_parquet(str(output_dir / "scored_pairs.parquet"))
-    representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
+    workspace.write_parquet(
+        documents,
+        output_dir / "source_blocks.parquet",
+    )
+    workspace.write_parquet(
+        fingerprinted,
+        output_dir / "fingerprinted.parquet",
+    )
+    workspace.write_parquet(
+        scored_pairs,
+        output_dir / "scored_pairs.parquet",
+    )
+    workspace.write_parquet(
+        representatives,
+        output_dir / "deduped_documents.parquet",
+    )
     write_json(
         output_dir / "manifest.json",
         {
@@ -1167,7 +1195,9 @@ def _run_with_workspace(
 
     collision_buckets = workspace.stage_table(
         "collision-buckets",
-        build_collision_buckets_table(band_memberships),
+        build_collision_buckets_table(
+            colliding_band_memberships_relation(conn)
+        ),
     )
     collision_buckets.create_view("collision_buckets", replace=True)
     validate_candidate_pair_budget(

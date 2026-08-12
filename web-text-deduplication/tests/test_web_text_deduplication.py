@@ -25,6 +25,7 @@ from src.web_text_deduplication import (
     MINHASH_VALUES,
     band_membership_relations,
     build_cluster_relation,
+    colliding_band_memberships_relation,
     file_sha256,
     fingerprint_documents_batch,
     jaccard,
@@ -110,6 +111,12 @@ class WebTextDeduplicationTest(unittest.TestCase):
     def test_default_run_writes_deduplication_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-web-dedup-") as tmp_dir:
             output_dir = Path(tmp_dir) / "web_text_deduplication"
+            output_dir.mkdir(parents=True)
+            pq.write_table(
+                pa.table({"stale": [True]}),
+                output_dir / "fingerprinted.parquet",
+            )
+            self.run_example(output_dir)
             self.run_example(output_dir)
 
             manifest = json.loads((output_dir / "manifest.json").read_text())
@@ -239,9 +246,11 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 summary_by_domain["docs.example"]["candidate_pair_rows"], "0"
             )
 
+            source_blocks = pq.read_table(output_dir / "source_blocks.parquet")
             fingerprinted = pq.read_table(output_dir / "fingerprinted.parquet")
             scored_pairs = pq.read_table(output_dir / "scored_pairs.parquet")
             deduped = pq.read_table(output_dir / "deduped_documents.parquet")
+            self.assertEqual(source_blocks.num_rows, 24)
             self.assertEqual(fingerprinted.num_rows, 24)
             self.assertEqual(scored_pairs.num_rows, 18)
             self.assertEqual(deduped.num_rows, 12)
@@ -533,6 +542,43 @@ class WebTextDeduplicationTest(unittest.TestCase):
                     collision_buckets,
                     max_candidate_pair_slots=8,
                 )
+
+    def test_singleton_buckets_are_filtered_before_driver_collection(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-collision-filter-") as tmp_dir:
+            source = Path(tmp_dir) / "band-memberships.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "band_index": [0, 0, 1, 2, 3],
+                        "lsh_band": ["shared", "shared", "a", "b", "c"],
+                        "doc_id": ["left", "right", "one", "two", "three"],
+                        "domain": [
+                            "a.example",
+                            "b.example",
+                            "c.example",
+                            "d.example",
+                            "e.example",
+                        ],
+                    }
+                ),
+                source,
+            )
+            conn = self.relation_connection()
+            conn.read_parquet(str(source)).create_view(
+                "band_memberships", replace=True
+            )
+
+            rows = colliding_band_memberships_relation(conn).order(
+                "band_index, lsh_band, doc_id"
+            ).fetchall()
+
+            self.assertEqual(
+                rows,
+                [
+                    (0, "shared", "left", "a.example"),
+                    (0, "shared", "right", "b.example"),
+                ],
+            )
 
     def test_cli_fails_closed_before_a_hot_bucket_self_join(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-web-hot-bucket-") as tmp_dir:

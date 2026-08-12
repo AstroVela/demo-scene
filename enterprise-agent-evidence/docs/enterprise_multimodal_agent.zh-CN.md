@@ -203,9 +203,15 @@ end
 所有输出都由 RayRunner 执行。Parquet 产物使用 Relation writer；`workspace.write_csv` 会新建一条 Ray 投影，再将 Arrow 结果写为便于审核的 CSV：
 
 ~~~python
-agent_context.write_parquet(str(OUTPUT_DIR / "agent_context.parquet"))
-asset_features.write_parquet(str(OUTPUT_DIR / "asset_features.parquet"))
-evidence_features.write_parquet(str(OUTPUT_DIR / "evidence_features.parquet"))
+workspace.write_parquet(
+    agent_context, OUTPUT_DIR / "agent_context.parquet"
+)
+workspace.write_parquet(
+    asset_features, OUTPUT_DIR / "asset_features.parquet"
+)
+workspace.write_parquet(
+    evidence_features, OUTPUT_DIR / "evidence_features.parquet"
+)
 workspace.write_csv(evidence_gaps, OUTPUT_DIR / "evidence_gaps.csv")
 workspace.write_csv(
     evidence_conflicts, OUTPUT_DIR / "evidence_conflicts.csv"

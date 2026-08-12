@@ -797,9 +797,18 @@ def write_artifacts(
         "review_rows": relation_row_count(review_queue),
     }
 
-    asset_features.write_parquet(str(output_dir / "asset_features.parquet"))
-    agent_context.write_parquet(str(output_dir / "agent_context.parquet"))
-    evidence_features.write_parquet(str(output_dir / "evidence_features.parquet"))
+    workspace.write_parquet(
+        asset_features,
+        output_dir / "asset_features.parquet",
+    )
+    workspace.write_parquet(
+        agent_context,
+        output_dir / "agent_context.parquet",
+    )
+    workspace.write_parquet(
+        evidence_features,
+        output_dir / "evidence_features.parquet",
+    )
     workspace.write_csv(
         evidence_gaps,
         output_dir / "evidence_gaps.csv",

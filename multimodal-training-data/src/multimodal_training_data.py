@@ -590,8 +590,14 @@ def write_artifacts(
         "rejected_rows": relation_row_count(rejected_records),
         "modality_summary_rows": relation_row_count(modality_summary),
     }
-    feature_records.write_parquet(str(output_dir / "feature_records.parquet"))
-    training_release.write_parquet(str(output_dir / "training_release.parquet"))
+    workspace.write_parquet(
+        feature_records,
+        output_dir / "feature_records.parquet",
+    )
+    workspace.write_parquet(
+        training_release,
+        output_dir / "training_release.parquet",
+    )
     workspace.write_csv(
         rejected_records,
         output_dir / "rejected_records.csv",
