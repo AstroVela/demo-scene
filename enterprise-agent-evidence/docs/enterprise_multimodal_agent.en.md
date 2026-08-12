@@ -41,9 +41,11 @@ The executable uses Relation readers for both layers:
 
 ~~~python
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import vane
 
+from src._common import RunnerWorkspace
 from src.enterprise_multimodal_agent import (
     DEFAULT_ASSET_CATALOG,
     DEFAULT_INPUT_DIR,
@@ -51,16 +53,19 @@ from src.enterprise_multimodal_agent import (
 )
 
 conn = vane.connect()
+workspace_dir = TemporaryDirectory(prefix="vane-enterprise-ray-")
+workspace = RunnerWorkspace(Path(workspace_dir.name), conn)
 cases, requirements, public_assets, evidence_links, modalities = (
     materialize_sources(
         conn,
+        workspace,
         Path(DEFAULT_INPUT_DIR),
         Path(DEFAULT_ASSET_CATALOG),
     )
 )
 ~~~
 
-For the checked-in scenario, the executable first verifies scenario_snapshot.json. materialize_sources then calls .read_csv( and fails closed on empty required fields, invalid dates, unsupported requirement modalities, duplicate keys, incomplete claim pairs, cases without requirements, observations after their review date, unknown case references, unknown asset references, and empty source tables. Asset rows must also carry a source URI, license identifier, MIME type, and 64-character SHA-256.
+For the checked-in scenario, the executable first verifies `scenario_snapshot.json`. `materialize_sources` then uses `read_csv_as_strings` to load each CSV as Arrow, stages it as Parquet, and reads it through RayRunner. It fails closed on empty required fields, invalid dates, unsupported requirement modalities, duplicate keys, incomplete claim pairs, cases without requirements, observations after their review date, unknown case references, unknown asset references, and empty source tables. Asset rows must also carry a source URI, license identifier, MIME type, and 64-character SHA-256.
 
 After those checks, only catalog assets referenced by evidence_links enter the Batch UDFs. Payload bytes remain in files. SQL joins the parsed asset features to evidence_links afterward, so a file referenced by several cases is decoded only once and unrelated catalog rows are not processed.
 
@@ -87,21 +92,28 @@ stage_functions = {
     "text": "process_text_asset_batch",
 }
 
-relations = []
+branch_paths = []
 for modality in modalities:
     source = public_assets.filter(
         f"modality = '{modality}'"
     ).order("record_id")
-    relations.append(
-        source.map_batches(
-            importable_batch_function(stage_functions[modality]),
-            schema=ASSET_FEATURE_SCHEMA,
-            batch_size=4,
+    branch_paths.append(
+        workspace.write_relation(
+            f"process-{modality}-asset",
+            source.map_batches(
+                importable_batch_function(stage_functions[modality]),
+                schema=ASSET_FEATURE_SCHEMA,
+                batch_size=4,
+            ),
         )
     )
+
+asset_features = conn.read_parquet(
+    [str(path) for path in branch_paths]
+)
 ~~~
 
-The branches are unioned into five typed asset_features rows. SQL then joins those rows to eight evidence_links rows to produce the case-level evidence_features contract. evidence_features includes:
+RayRunner writes each branch to the Parquet workspace, and a multi-file Parquet scan combines them into five typed `asset_features` rows. SQL then joins those rows to eight `evidence_links` rows to produce the case-level `evidence_features` contract. `evidence_features` includes:
 
 - record_id, case_id, and asset_id;
 - source_uri, source_page_uri, and source_version;
@@ -175,16 +187,24 @@ Default results:
 
 ## Artifacts
 
-Relation writers produce the feature, context, and review outputs:
+RayRunner evaluates every output. Parquet artifacts use Relation writers; `workspace.write_csv` starts a fresh Ray projection and writes its Arrow result as review-friendly CSV:
 
 ~~~python
-agent_context.write_parquet(str(OUTPUT_DIR / "agent_context.parquet"))
-asset_features.write_parquet(str(OUTPUT_DIR / "asset_features.parquet"))
-evidence_features.write_parquet(str(OUTPUT_DIR / "evidence_features.parquet"))
-evidence_gaps.write_csv(str(OUTPUT_DIR / "evidence_gaps.csv"))
-evidence_conflicts.write_csv(str(OUTPUT_DIR / "evidence_conflicts.csv"))
-review_queue.write_csv(str(OUTPUT_DIR / "review_queue.csv"))
-status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
+workspace.write_parquet(
+    agent_context, OUTPUT_DIR / "agent_context.parquet"
+)
+workspace.write_parquet(
+    asset_features, OUTPUT_DIR / "asset_features.parquet"
+)
+workspace.write_parquet(
+    evidence_features, OUTPUT_DIR / "evidence_features.parquet"
+)
+workspace.write_csv(evidence_gaps, OUTPUT_DIR / "evidence_gaps.csv")
+workspace.write_csv(
+    evidence_conflicts, OUTPUT_DIR / "evidence_conflicts.csv"
+)
+workspace.write_csv(review_queue, OUTPUT_DIR / "review_queue.csv")
+workspace.write_csv(status_summary, OUTPUT_DIR / "status_summary.csv")
 ~~~
 
 | File | Purpose |
@@ -203,7 +223,7 @@ status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
 Run the offline example:
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
+.venv/bin/python src/enterprise_multimodal_agent.py
 ~~~
 
 Expected summary:
@@ -224,14 +244,14 @@ Refresh and verify the public asset snapshot:
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
-Use --input-dir for another scenario and --asset-catalog for another governed asset manifest. --execution-backend can pin subprocess_task or ray_task. The Relation SQL path requires the `local-fast` runner because its named tables live in the client connection.
+Use `--input-dir` for another scenario and `--asset-catalog` for another governed asset manifest. Vane 0.1.0 uses RayRunner by default, and `--execution-backend auto` therefore resolves to `ray_task`; `ray_task` and `subprocess_task` can also be selected explicitly. Intermediate Relations are materialized through the Parquet workspace so every distributed UDF receives the Ray query context it requires.
 
 The pinned default run fails before processing when a scenario CSV, asset catalog, source manifest, or payload no longer matches its snapshot. Its manifest uses repository-relative paths so results do not expose a developer workstation path. Custom input directories still receive semantic integrity checks, but are reported as custom_inputs and are not claimed as snapshot-verified.
 
 Focused verification:
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
+.venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
 ~~~
 
 ## Example boundaries

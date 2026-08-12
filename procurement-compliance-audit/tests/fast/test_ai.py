@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 import vane
 
@@ -48,7 +49,16 @@ class FakeRelation:
         self._rows = rows
 
     def fetchall(self):
-        return list(self._rows or [])
+        if self._rows is not None:
+            return list(self._rows)
+        return [
+            tuple(row[name] for name in self.table.column_names)
+            for row in self.table.to_pylist()
+        ]
+
+    def select(self, *expressions):
+        names = [str(expression) for expression in expressions]
+        return FakeRelation(self.table.select(names))
 
 
 class FakeSession:
@@ -73,6 +83,14 @@ class FakeStore:
 
 def _source():
     return build_fixture(FIXTURE_DIR).source
+
+
+def _fake_prompt_result(relation, response: str) -> FakeRelation:
+    table = relation.table.append_column(
+        "raw_response",
+        pa.array([response], type=pa.string()),
+    )
+    return FakeRelation(table)
 
 
 def test_build_requests_binds_images_and_marks_ocr_as_untrusted():
@@ -167,10 +185,24 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypa
         '"supplier_name":null}'
     )
     responses = iter([recommendation_response, minutes_response])
+    materialized_columns = []
 
     def fake_prompt(relation, prompt_column, **kwargs):
         prompt_calls.append((relation.table.to_pylist(), prompt_column, kwargs))
-        return FakeRelation(None, [(next(responses),)])
+        result = _fake_prompt_result(relation, next(responses))
+        assert result.table.column_names == [
+            "project_id",
+            "file_id",
+            "role",
+            "prompt_text",
+            "image_bytes",
+            "raw_response",
+        ]
+        return result
+
+    def materialize(relation):
+        materialized_columns.append(relation.table.column_names)
+        return relation.table
 
     monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
@@ -180,6 +212,7 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypa
         config,
         health_probe=lambda _config: None,
         object_store=FakeStore(),
+        response_materializer=materialize,
     )
 
     assert len(prompt_calls) == 2
@@ -187,8 +220,24 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypa
         "EVD-REC-001",
         "EVD-MIN-001",
     ]
-    assert all(call[1] == "prompt_text" for call in prompt_calls)
-    assert all(call[2]["image_columns"] == ["image_bytes"] for call in prompt_calls)
+    assert all(
+        [str(expression) for expression in call[1]]
+        == ["prompt_text", "image_bytes"]
+        for call in prompt_calls
+    )
+    assert all(call[2]["base_url"] == config.ai.base_url for call in prompt_calls)
+    assert all(call[2]["timeout"] == config.ai.timeout_seconds for call in prompt_calls)
+    assert all(call[2]["use_chat_completions"] is True for call in prompt_calls)
+    assert all(call[2]["temperature"] == config.ai.temperature for call in prompt_calls)
+    assert all(
+        call[2]["max_output_tokens"] == config.ai.max_tokens
+        for call in prompt_calls
+    )
+    assert all(
+        call[2]["max_concurrency_per_actor"] == config.ai.concurrency
+        for call in prompt_calls
+    )
+    assert materialized_columns == [["raw_response"], ["raw_response"]]
     assert result.table.to_pylist() == [
         {
             "project_id": "PRJ-2026-001",
@@ -205,7 +254,10 @@ def test_relation_api_is_called_once_per_image_and_metadata_stays_bound(monkeypa
 
 def test_local_runner_uses_vane_provider_without_relation_actor(monkeypatch):
     source = _source()
-    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="local",
+    )
     session = FakeSession()
     recommendation_response = (
         '{"confidence":0.96,"document_type":"recommendation_record",'
@@ -307,7 +359,7 @@ def test_invalid_model_contract_is_retried_once_with_same_image(monkeypatch):
 
     def fake_prompt(relation, prompt_column, **kwargs):
         calls.append(relation.table.to_pylist()[0])
-        return FakeRelation(None, [(next(responses),)])
+        return _fake_prompt_result(relation, next(responses))
 
     monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
@@ -355,7 +407,7 @@ def test_response_document_type_must_match_trusted_evidence_role(monkeypatch):
 
     def fake_prompt(relation, _prompt_column, **_kwargs):
         calls.append(relation.table.to_pylist()[0])
-        return FakeRelation(None, [(next(responses),)])
+        return _fake_prompt_result(relation, next(responses))
 
     monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     result = build_evidence_ai_relation(
@@ -389,8 +441,8 @@ def test_two_invalid_model_contracts_fail_with_file_context(monkeypatch):
     )
     responses = iter([recommendation, "not json", "not json"])
 
-    def fake_prompt(_relation, _prompt_column, **_kwargs):
-        return FakeRelation(None, [(next(responses),)])
+    def fake_prompt(relation, _prompt_column, **_kwargs):
+        return _fake_prompt_result(relation, next(responses))
 
     monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
     with pytest.raises(EvidenceAiInputError, match="EVD-MIN-001"):

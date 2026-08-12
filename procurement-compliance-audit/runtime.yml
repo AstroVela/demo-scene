@@ -1,6 +1,6 @@
 version: 1
 # Switch between Local and Ray without changing the relation pipeline.
-runner: local
+runner: ray
 output_dir: output
 
 # PostgreSQL stores project, supplier, score, and evidence metadata.

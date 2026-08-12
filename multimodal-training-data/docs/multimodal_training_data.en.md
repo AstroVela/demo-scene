@@ -2,7 +2,7 @@
 
 Before training assets enter a training job, they usually need decoding, quality checks, license checks, and a consistent format. Documents, images, audio, and text require different validation logic, but downstream consumers still need one stable contract that says which records can ship, which were rejected, and why.
 
-Putting every modality inside one UDF couples processing logic to the output schema. This example uses four separate Arrow batch UDF branches and combines them with Relation `union`. The release gate consumes shared fields without needing to understand how each media processor produced them.
+Putting every modality inside one UDF couples processing logic to the output schema. This example uses four separate Arrow batch UDF branches, materializes each branch through RayRunner, and combines their Parquet outputs. The release gate consumes shared fields without needing to understand how each media processor produced them.
 
 ## Scope
 
@@ -26,13 +26,15 @@ public_sources.csv
 
 ## Initialize
 
-The following values match the complete script's defaults. An empty `UDF_OPTIONS` lets Vane choose the Batch UDF backend. To pin it, pass `{"execution_backend": "subprocess_task"}` or the corresponding Ray task configuration.
+The following values match the complete script's defaults. Vane 0.1.0 uses RayRunner by default. An empty `UDF_OPTIONS` therefore selects `ray_task`; pass `{"execution_backend": "ray_task"}` or `{"execution_backend": "subprocess_task"}` to pin a task backend explicitly.
 
 ```python
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import vane
 
+from src._common import RunnerWorkspace, read_csv_as_strings
 from src.multimodal_training_data import (
     SUPPORTED_MODALITIES,
     TRAINING_FEATURE_SCHEMA,
@@ -48,6 +50,8 @@ BATCH_SIZE = 2
 UDF_OPTIONS = {}
 
 conn = vane.connect()
+workspace_dir = TemporaryDirectory(prefix="vane-multimodal-ray-")
+workspace = RunnerWorkspace(Path(workspace_dir.name), conn)
 ```
 
 ## Input Data
@@ -68,15 +72,20 @@ The default manifest is `data/multimodal_training_data/training_assets.csv`. Eac
 | `content_base64` | Optional embedded payload for custom or synthetic fixtures |
 | `metadata_json` | Modality-specific supplemental metadata |
 
-The pipeline begins with a Relation reader and normalizes nullable strings to empty strings or empty JSON at the input boundary:
+Vane 0.1.0's RayRunner cannot serialize a CSV scan. The executable therefore reads every CSV as strings with Arrow, stages it as Parquet, and then normalizes nullable fields to empty strings or empty JSON at the Relation boundary:
 
 ```python
 input_path = validate_input_path(INPUT_PATH)
-input_relation = conn.read_csv(str(input_path), header=True)
+input_relation = workspace.stage_table(
+    "input-assets",
+    read_csv_as_strings(input_path),
+)
 raw_assets_rel = project_raw_assets(input_relation)
 
-raw_assets_rel.order("record_id").to_table("raw_assets")
-raw_assets = conn.sql("select * from raw_assets")
+raw_assets = workspace.materialize_view(
+    "raw_assets",
+    raw_assets_rel.order("record_id"),
+)
 modalities = validate_modalities(raw_assets)
 ```
 
@@ -230,30 +239,31 @@ stage_functions = {
     "text": "process_text_batch",
 }
 
-relations = []
+branch_paths = []
 for modality in SUPPORTED_MODALITIES:
     source = raw_assets.filter(
         f"modality = '{modality}'"
     ).order("record_id")
-    relations.append(
-        source.map_batches(
-            importable_batch_function(stage_functions[modality]),
-            schema=TRAINING_FEATURE_SCHEMA,
-            batch_size=BATCH_SIZE,
-            **UDF_OPTIONS,
+    branch_paths.append(
+        workspace.write_relation(
+            f"process-{modality}",
+            source.map_batches(
+                importable_batch_function(stage_functions[modality]),
+                schema=TRAINING_FEATURE_SCHEMA,
+                batch_size=BATCH_SIZE,
+                **UDF_OPTIONS,
+            ),
         )
     )
 
-features_rel = relations[0]
-for relation in relations[1:]:
-    features_rel = features_rel.union(relation)
-
-features_rel.order(
-    "modality, record_id"
-).to_table("feature_records")
+features_rel = conn.read_parquet([str(path) for path in branch_paths])
+feature_records = workspace.materialize_view(
+    "feature_records",
+    features_rel.order("modality, record_id"),
+)
 ```
 
-Separate branches allow each processor to be tested or replaced independently. Every branch declares the same `TRAINING_FEATURE_SCHEMA`, so `union` produces one type-stable Relation.
+Separate branches allow each processor to be tested or replaced independently. Every branch declares the same `TRAINING_FEATURE_SCHEMA`; a multi-file Parquet scan therefore produces one type-stable Relation without a distributed `UNION`.
 
 Shared columns include source information, license, content, SHA-256, byte and token counts, quality score, decision, and risk flags. Two columns retain complex types:
 
@@ -275,13 +285,12 @@ rejected_records_rel = feature_records.filter(
     "decision = 'rejected'"
 ).order("quality_score, modality, record_id")
 
-conn.sql("drop table if exists training_release")
-training_release_rel.to_table("training_release")
-training_release = conn.sql("select * from training_release")
-
-conn.sql("drop table if exists rejected_records")
-rejected_records_rel.to_table("rejected_records")
-rejected_records = conn.sql("select * from rejected_records")
+training_release = workspace.materialize_view(
+    "training_release", training_release_rel
+)
+rejected_records = workspace.materialize_view(
+    "rejected_records", rejected_records_rel
+)
 ```
 
 The modality summary remains a Relation aggregation:
@@ -291,16 +300,18 @@ modality_summary_rel = feature_records.aggregate(
     """
     modality,
     count(*) as records,
-    sum(byte_size) as total_bytes,
+    cast(sum(byte_size) as bigint) as total_bytes,
     round(avg(quality_score), 3) as avg_quality_score,
-    sum(case when decision = 'accepted' then 1 else 0 end) as accepted,
-    sum(case when decision = 'rejected' then 1 else 0 end) as rejected
+    cast(sum(case when decision = 'accepted' then 1 else 0 end) as bigint)
+      as accepted,
+    cast(sum(case when decision = 'rejected' then 1 else 0 end) as bigint)
+      as rejected
     """
 ).order("modality")
 
-conn.sql("drop table if exists modality_summary")
-modality_summary_rel.to_table("modality_summary")
-modality_summary = conn.sql("select * from modality_summary")
+modality_summary = workspace.materialize_view(
+    "modality_summary", modality_summary_rel
+)
 ```
 
 The default summary is:
@@ -322,14 +333,22 @@ The five real public records produce four releases and one rejection. These valu
 
 ## Artifacts
 
-Relation writers produce every tabular artifact:
+RayRunner evaluates every tabular output. Parquet artifacts use Relation writers; `workspace.write_csv` writes a fresh Ray projection through Arrow:
 
 ```python
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-feature_records.write_parquet(str(OUTPUT_DIR / "feature_records.parquet"))
-training_release.write_parquet(str(OUTPUT_DIR / "training_release.parquet"))
-rejected_records.write_csv(str(OUTPUT_DIR / "rejected_records.csv"))
-modality_summary.write_csv(str(OUTPUT_DIR / "modality_summary.csv"))
+workspace.write_parquet(
+    feature_records, OUTPUT_DIR / "feature_records.parquet"
+)
+workspace.write_parquet(
+    training_release, OUTPUT_DIR / "training_release.parquet"
+)
+workspace.write_csv(
+    rejected_records, OUTPUT_DIR / "rejected_records.csv"
+)
+workspace.write_csv(
+    modality_summary, OUTPUT_DIR / "modality_summary.csv"
+)
 ```
 
 | File | Purpose |
@@ -347,7 +366,7 @@ Parquet preserves the `risk_flags` list and `media_metrics` struct. Rejected rec
 The executable script contains every Relation and Batch UDF stage shown above:
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py
+.venv/bin/python src/multimodal_training_data.py
 ```
 
 The default run prints:
@@ -362,24 +381,24 @@ Output directory: output/multimodal_training_data
 Run the preserved synthetic error fixture with:
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py \
+.venv/bin/python src/multimodal_training_data.py \
   --input data/multimodal_training_data/synthetic_training_assets.csv
 ```
 
-Use `--input` to replace the manifest, `--batch-size` to control input batches for each modality UDF, `--execution-backend` to select `subprocess_task` or `ray_task`, and `--output-dir` to change the artifact directory. The script requires the `local-fast` relation runner because its named tables live in the client connection; task backends affect only the four Python UDF branches.
+Use `--input` to replace the manifest, `--batch-size` to control input batches for each modality UDF, `--execution-backend` to choose `auto`, `ray_task`, or `subprocess_task`, and `--output-dir` to change the artifact directory. Vane 0.1.0's default RayRunner supplies the query and block-stream context required by `ray_task`; the script's Parquet workspace preserves that context across stages.
 
 The three commands have different purposes:
 
 | Command | Network | Purpose |
 | --- | --- | --- |
-| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py` | No | Process and release the default public snapshot |
+| `.venv/bin/python src/multimodal_training_data.py` | No | Process and release the default public snapshot |
 | `.venv/bin/python scripts/prepare_multimodal_training_data.py --refresh` | Yes | Re-download sources and verify hashes |
-| `VANE_RUNNER=local-fast .venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | No | Regress invalid-image and missing-license paths |
+| `.venv/bin/python src/multimodal_training_data.py --input .../synthetic_training_assets.csv` | No | Regress invalid-image and missing-license paths |
 
 Run the focused checks with:
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_multimodal_training_data
+.venv/bin/python -m unittest -v tests.test_multimodal_training_data
 ```
 
 ## Current scope

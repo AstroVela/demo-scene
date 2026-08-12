@@ -9,6 +9,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pyarrow as pa
@@ -26,6 +27,8 @@ from claims_evidence_graph_pipeline.contracts import (
     PHOTO_INPUT,
     PHOTO_MODEL_RUNS,
     REVIEW_TASKS,
+    SUPPORTED_EXECUTION_BACKENDS,
+    SUPPORTED_RUNNERS,
     SUPPORTED_RUN_PROFILES,
     ContractError,
     RunConfig,
@@ -38,8 +41,10 @@ from claims_evidence_graph_pipeline.evaluation import (
 )
 from claims_evidence_graph_pipeline.photo_vlm import (
     check_image_model_service,
+    configure_image_model_credentials,
     run_photo_damage_vlm,
 )
+from claims_evidence_graph_pipeline.runner_workspace import RunnerWorkspace
 from claims_evidence_graph_pipeline.udfs import (
     FUNSD_DOCUMENT_EXTRACT_UDF,
     PHOTO_QUALITY_UDF,
@@ -260,6 +265,19 @@ def validate_run_config(config: RunConfig) -> None:
         raise ContractError("--batch-size must be at least 1")
     if config.max_image_model_errors < 0:
         raise ContractError("--max-image-model-errors must be non-negative")
+    if config.execution_backend not in SUPPORTED_EXECUTION_BACKENDS:
+        raise ContractError(
+            "--execution-backend must be one of "
+            + ", ".join(SUPPORTED_EXECUTION_BACKENDS)
+        )
+    if config.runner not in SUPPORTED_RUNNERS:
+        raise ContractError(
+            "--runner must be one of " + ", ".join(SUPPORTED_RUNNERS)
+        )
+    if config.runner == "local" and config.execution_backend == "ray_task":
+        raise ContractError(
+            "--execution-backend must be local when --runner is local"
+        )
 
 
 def load_pipeline_inputs(config: RunConfig) -> PipelineInputs:
@@ -302,14 +320,15 @@ def load_pipeline_inputs(config: RunConfig) -> PipelineInputs:
 
 
 def run_evidence_stages(
-    conn: Any,
+    workspace: RunnerWorkspace,
     inputs: PipelineInputs,
     config: RunConfig,
     *,
     run_image_semantics: bool,
 ) -> EvidenceStageTables:
+    conn = workspace.connection
     photo_table = run_batch_udf(
-        conn,
+        workspace,
         inputs.photo_input_table,
         PHOTO_QUALITY_UDF,
         batch_size=config.batch_size,
@@ -320,14 +339,14 @@ def run_evidence_stages(
     photo_model_run_table = PHOTO_MODEL_RUNS.arrow_table([])
     if run_image_semantics:
         photo_damage_table, photo_model_run_table = run_photo_damage_vlm(
-            conn,
+            workspace,
             inputs.photo_input_table,
             photo_table,
             config,
         )
 
     document_table = run_batch_udf(
-        conn,
+        workspace,
         inputs.document_input_table,
         FUNSD_DOCUMENT_EXTRACT_UDF,
         batch_size=config.batch_size,
@@ -343,10 +362,10 @@ def run_evidence_stages(
         photo_model_run_table=photo_model_run_table if run_image_semantics else None,
     )
 
-    conn.register("claim_files", inputs.claim_file_table)
-    conn.register("photo_evidence", photo_table)
-    conn.register("document_evidence", document_table)
-    conn.register("review_tasks", review_task_table)
+    workspace.create_view("claim_files", inputs.claim_file_table)
+    workspace.create_view("photo_evidence", photo_table)
+    workspace.create_view("document_evidence", document_table)
+    workspace.create_view("review_tasks", review_task_table)
     claim_summary_table = build_claim_summary(conn, inputs.claim_rows)
 
     evidence_node_table = build_evidence_nodes(
@@ -990,103 +1009,121 @@ def run_pipeline(config: RunConfig, *, print_summary: bool = True) -> PipelineRe
     validate_run_config(config)
     run_image_semantics = config.requires_image_semantics
     if run_image_semantics:
+        configure_image_model_credentials(config)
         check_image_model_service(config)
+
+    vane.configure(runner=config.runner)
+    # Start Ray before loading the input bytes into driver-owned Arrow tables.
+    # Semantic credentials are already set so local workers inherit them.
+    vane.get_or_create_runner()
 
     inputs = load_pipeline_inputs(config)
 
-    if config.runner:
-        vane.configure(runner=config.runner)
+    with TemporaryDirectory(
+        prefix=f".vane-claims-evidence-{config.runner}-",
+        dir=config.workspace_root,
+    ) as workspace_root:
+        conn = vane.connect()
+        try:
+            workspace = RunnerWorkspace(Path(workspace_root), conn)
+            stages = run_evidence_stages(
+                workspace,
+                inputs,
+                config,
+                run_image_semantics=run_image_semantics,
+            )
+            tables = assemble_output_tables(
+                stages,
+                inputs,
+                config,
+                run_image_semantics=run_image_semantics,
+            )
+            output_validation = validate_pipeline_outputs(
+                tables,
+                inputs,
+                config,
+                run_image_semantics=run_image_semantics,
+            )
 
-    conn = vane.connect()
-    stages = run_evidence_stages(
-        conn,
-        inputs,
-        config,
-        run_image_semantics=run_image_semantics,
-    )
-    tables = assemble_output_tables(
-        stages,
-        inputs,
-        config,
-        run_image_semantics=run_image_semantics,
-    )
-    output_validation = validate_pipeline_outputs(
-        tables,
-        inputs,
-        config,
-        run_image_semantics=run_image_semantics,
-    )
+            metadata = build_metadata(
+                config=config,
+                input_validation=inputs.input_validation,
+                output_validation=output_validation,
+                tables=tables,
+            )
+            validation_report = {
+                "input": inputs.input_validation.to_dict(),
+                "output": output_validation.to_dict(),
+            }
+            write_pipeline_outputs(
+                tables,
+                metadata,
+                validation_report,
+                config,
+            )
 
-    metadata = build_metadata(
-        config=config,
-        input_validation=inputs.input_validation,
-        output_validation=output_validation,
-        tables=tables,
-    )
-    validation_report = {
-        "input": inputs.input_validation.to_dict(),
-        "output": output_validation.to_dict(),
-    }
-    write_pipeline_outputs(
-        tables,
-        metadata,
-        validation_report,
-        config,
-    )
+            if print_summary:
+                print("\nClaims evidence graph POC complete")
+                print(f"Output directory: {config.output_dir}")
+                for name, table in tables.items():
+                    print(f"{name}: {table.num_rows}")
 
-    if print_summary:
-        print("\nClaims evidence graph POC complete")
-        print(f"Output directory: {config.output_dir}")
-        for name, table in tables.items():
-            print(f"{name}: {table.num_rows}")
+                print_preview(
+                    "Claim summary",
+                    workspace.stage_table("claim-summary-preview", stages.claim_summary),
+                    """
+                    select
+                        claim_id,
+                        file_count,
+                        photo_count,
+                        document_count,
+                        review_task_count,
+                        photo_review_count,
+                        document_review_count,
+                        claim_packet_status
+                    from r
+                    order by claim_id
+                    """,
+                )
+                print_preview(
+                    "Review tasks",
+                    workspace.stage_table("review-tasks-preview", stages.review_tasks),
+                    """
+                    select
+                        claim_id,
+                        task_type,
+                        priority,
+                        source_file_id,
+                        reason
+                    from r
+                    order by claim_id, task_type, source_file_id
+                    """,
+                )
+                print_preview(
+                    "Photo quality range",
+                    workspace.stage_table(
+                        "photo-evidence-preview",
+                        stages.photo_evidence,
+                    ),
+                    """
+                    select
+                        min(quality_score) as min_quality_score,
+                        max(quality_score) as max_quality_score,
+                        cast(
+                            sum(case when needs_review then 1 else 0 end)
+                            as bigint
+                        ) as photos_needing_review
+                    from r
+                    """,
+                )
 
-        print_preview(
-            "Claim summary",
-            conn.from_arrow(stages.claim_summary),
-            """
-            select
-                claim_id,
-                file_count,
-                photo_count,
-                document_count,
-                review_task_count,
-                photo_review_count,
-                document_review_count,
-                claim_packet_status
-            from r
-            order by claim_id
-            """,
-        )
-        print_preview(
-            "Review tasks",
-            conn.from_arrow(stages.review_tasks),
-            """
-            select
-                claim_id,
-                task_type,
-                priority,
-                source_file_id,
-                reason
-            from r
-            order by claim_id, task_type, source_file_id
-            """,
-        )
-        print_preview(
-            "Photo quality range",
-            conn.from_arrow(stages.photo_evidence),
-            """
-            select
-                min(quality_score) as min_quality_score,
-                max(quality_score) as max_quality_score,
-                sum(case when needs_review then 1 else 0 end)
-                    as photos_needing_review
-            from r
-            """,
-        )
+            result = PipelineResult(
+                output_dir=config.output_dir,
+                tables=tables,
+                validation=output_validation,
+                metadata=metadata,
+            )
+        finally:
+            conn.close()
 
-    return PipelineResult(
-        output_dir=config.output_dir,
-        tables=tables,
-        validation=output_validation,
-        metadata=metadata,
-    )
+    return result

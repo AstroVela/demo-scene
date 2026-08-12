@@ -15,7 +15,7 @@ Winner recalculation: SUP-JW-001 -> SUP-ZJ-002
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls`, the strict response validator with `@vane.func`, and Qwen is accessed through Vane's AI APIs. The checked-in configuration defaults to the `local` Runner, and the same fixture is verified on both Local and Ray. Local creates one RapidOCR engine on the driver, processes each trusted evidence locator once, and exposes the immutable results to SQL; Ray attaches the OCR worker as a stateful expression and invokes Qwen through the `vane.ai.prompt` AI Function.
+Vane is a multi-compute engine for multimodal data: it lets score tables, document images, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. The OCR worker is registered with `@vane.cls`, the strict response validator with `@vane.func`, and Qwen is accessed through Vane's AI APIs. The checked-in configuration defaults to the `ray` Runner, whose full PostgreSQL, MinIO, RapidOCR Actor, and `vane.ai.prompt` AI Function path is verified end to end on a local Ray runtime. Local remains a supported fallback that creates one RapidOCR engine on the driver and exposes immutable results to SQL.
 
 ## Architecture
 
@@ -42,13 +42,13 @@ PostgreSQL project/supplier/score/evidence rows + 2 MinIO PNG objects
 
 ## Run the demo
 
-This demo requires CPython 3.12 and pins the public PyPI release `vane-ai==0.1.0a1`. The release provides CPython 3.10, 3.11, and 3.12 `manylinux_2_28_x86_64` wheels (glibc 2.28 or newer), but the launcher accepts only this demo's validated CPython 3.12 runtime. Follow the [complete runbook](docs/runbook.md) to create the environment, install Vane with `python -m pip install vane-ai`, install the demo with `python -m pip install -r requirements.txt`, and prepare running PostgreSQL, MinIO, and local Qwen services. Then run:
+This demo requires CPython 3.12 and pins `vane-ai[openai]==0.1.0`. The validated setup installs Vane and its dependencies from PyPI with uv. Follow the [complete runbook](docs/runbook.md) for the exact install commands and to prepare running PostgreSQL, MinIO, and local Qwen services. Then run:
 
 ```bash
 python scripts/run_demo.py e2e
 ```
 
-`runtime.yml` defaults to `runner: local`. Set it to `runner: ray` and connect a Ray cluster to exercise the distributed Actor and AI Relation path; both modes have been verified with the real fixture, OCR, and Qwen service.
+`runtime.yml` defaults to `runner: ray`. That checked-in path was verified with the real fixture, OCR, and Qwen service on a local Ray runtime. A multi-node target cluster still needs an infrastructure smoke test for shared paths, worker credentials, and capacity.
 
 `e2e` seeds synthetic data into PostgreSQL/MinIO, then runs a pipeline whose inputs come only from those services. It performs real OCR and Qwen inference; there is no AI mock fallback. It produces:
 
@@ -68,7 +68,7 @@ The purple `int_evidence_ai` node is not a SQL file: `ai.py` combines qualified 
 ```text
 ./
 ├── pyproject.toml
-│   # Declares Python/runtime dependencies, including the exact public-PyPI Vane pin.
+│   # Declares Python/runtime dependencies, including the exact Vane pin.
 │
 ├── requirements.txt
 │   # Installs this source tree and its fast-test extra from pyproject.toml.
@@ -79,7 +79,7 @@ The purple `int_evidence_ai` node is not a SQL file: `ai.py` combines qualified 
 │
 ├── scripts/
 │   └── run_demo.py
-│       # Verifies CPython 3.12, exact Vane/DuckDB identities, required APIs,
+│       # Verifies CPython 3.12, exact Vane distribution/API/engine identities,
 │       # package origins, and loopback networking before invoking the CLI.
 │
 ├── fixtures/expert-score-anomaly/

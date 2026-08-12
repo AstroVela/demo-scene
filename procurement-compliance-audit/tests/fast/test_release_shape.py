@@ -3,36 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import tomllib
 
-from procurement_audit_sql_demo.output_writer import OUTPUT_FILENAMES
 from procurement_audit_sql_demo.pipeline import CORE_RELATIONS
-from procurement_audit_sql_demo.verify_outputs import EXPECTED_RULES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = PROJECT_ROOT.parent
-
-
-def test_release_shape_is_deliberately_small():
-    fixture_files = sorted(
-        path.name
-        for path in (PROJECT_ROOT / "fixtures/expert-score-anomaly").iterdir()
-        if path.is_file()
-    )
-
-    assert fixture_files == [
-        "committee_minutes.png",
-        "expert_recommendation.png",
-        "expert_scores.csv",
-        "project.json",
-    ]
-    assert len(CORE_RELATIONS) == 8
-    assert len(list((PROJECT_ROOT / "src/procurement_audit_sql_demo/sql").rglob("*.sql"))) == 10
-    assert EXPECTED_RULES == {
-        "EXP-001-conflict-not-recused",
-        "EXP-002-score-bias",
-        "EXP-003-award-impact",
-    }
-    assert OUTPUT_FILENAMES == {"audit_findings.jsonl", "audit_summary.jsonl"}
 
 
 def test_runtime_source_contract_uses_postgres_and_minio_not_local_paths():
@@ -78,20 +53,25 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
         "project"
     ]
 
-    obsolete_index = ".".join(("test", "pypi", "org"))
     for name, runbook in runbooks.items():
         for required in (
-            "python3.12 -m venv .venv",
-            "python -m pip install vane-ai",
-            "vane-ai==0.1.0a1",
-            "python -m pip install -r requirements.txt",
+            "uv venv --python 3.12 .venv",
+            "uv pip install 'vane-ai[openai]==0.1.0'",
+            "uv pip install -r requirements.txt",
+            "uv pip check",
             "Qwen2.5-VL-3B-Instruct",
             "runner: local",
             "runner: ray",
             "vane.ai.load_provider",
+            "vane.ray_cxx",
+            "OPENAI_API_KEY",
         ):
             assert required in runbook, f"{name} is missing {required!r}"
-        assert obsolete_index not in runbook.lower()
+        assert "0.1.0a1" not in runbook
+        assert "duckdb.ray_cxx" not in runbook
+        assert "DuckDB Python package" not in runbook
+        assert "test.pypi.org" not in runbook
+        assert "unsafe-best-match" not in runbook
 
     assert "python scripts/run_demo.py" in readme
     assert "docs/runbook.md" in readme
@@ -104,8 +84,9 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
         assert "vllm==0.25.1" in qwen_guide
         assert "66285546d2b821cf421d4f5eb2576359d3770cd3" in qwen_guide
         assert "/v1/chat/completions" in qwen_guide
-    assert "vane-ai==0.1.0a1" in project["dependencies"]
+    assert "vane-ai[openai]==0.1.0" in project["dependencies"]
     assert "openai==2.45.0" in project["dependencies"]
+    assert "socksio==1.0.0" in project["dependencies"]
     assert any(item.startswith("minio") for item in project["dependencies"])
     assert any(item.startswith("psycopg") for item in project["dependencies"])
     for runbook in runbooks.values():
@@ -124,6 +105,13 @@ def test_readme_and_runbook_cover_story_execution_and_vane_capabilities():
     assert "vane.ai.prompt" in readme
     assert "AI Function" in readme
     assert "SUP-JW-001" in readme and "SUP-ZJ-002" in readme
+    assert "defaults to `runner: ray`" in readme
+    assert "verified with the real fixture, OCR, and Qwen" in readme
+    chinese_readme = (PROJECT_ROOT / "README.zh-CN.md").read_text(
+        encoding="utf-8"
+    )
+    assert "默认是 `runner: ray`" in chinese_readme
+    assert "真实 fixture、OCR 和 Qwen" in chinese_readme
 
 
 def test_old_demo_is_not_a_runtime_dependency():

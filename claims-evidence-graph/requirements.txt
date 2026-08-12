@@ -1,4 +1,4 @@
-# Vane and all other dependencies resolve from public PyPI.
+# Runtime dependencies, including Vane, resolve from PyPI.
 --constraint constraints.txt
 
 -e .[test]

@@ -6,7 +6,7 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = PROJECT_ROOT.parent
-PINNED_VANE = "vane-ai==0.1.0a1"
+PINNED_VANE = "vane-ai[openai]==0.1.0"
 PINNED_OPENAI = "openai==2.45.0"
 QWEN_REVISION = "66285546d2b821cf421d4f5eb2576359d3770cd3"
 
@@ -33,24 +33,24 @@ def test_packaging_declares_every_direct_runtime_dependency():
         "pyyaml",
         "pytz",
         "rapidocr",
+        "socksio",
     ):
         assert any(requirement.startswith(package) for requirement in dependencies)
     assert project.get("optional-dependencies", {}).get("test") == ["pytest>=8,<9"]
     assert (PROJECT_ROOT / "requirements.txt").read_text(
         encoding="utf-8"
     ).splitlines() == [
-        "# Vane resolves from public PyPI through pyproject.toml; see docs/runbook.md.",
+        "# Runtime dependencies, including Vane, are pinned in pyproject.toml.",
         "-e .[test]",
     ]
 
 
 def test_runbooks_document_a_fresh_environment_and_all_services():
     required_fragments = (
-        "python3.12 -m venv .venv",
-        "python -m pip install vane-ai",
-        PINNED_VANE,
-        "python -m pip install -r requirements.txt",
-        "python -m pip check",
+        "uv venv --python 3.12 .venv",
+        f"uv pip install '{PINNED_VANE}'",
+        "uv pip install -r requirements.txt",
+        "uv pip check",
         "python scripts/run_demo.py fixture",
         "python scripts/run_demo.py run",
         "python scripts/run_demo.py verify",
@@ -60,16 +60,31 @@ def test_runbooks_document_a_fresh_environment_and_all_services():
         "127.0.0.1:5432",
         "127.0.0.1:9000",
         "127.0.0.1:8001",
-        "v1.6.0-dev1",
-        "398033a962",
+        "v1.5.0-vane.b1c745e9c4",
+        "0c2adbf409",
         "vane.ai.load_provider",
+        "vane.ray_cxx",
+        "OPENAI_API_KEY",
     )
-    obsolete_index = ".".join(("test", "pypi", "org"))
     for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):
         text = (PROJECT_ROOT / name).read_text(encoding="utf-8")
-        assert obsolete_index not in text.lower()
+        assert "0.1.0a1" not in text
+        assert "duckdb.ray_cxx" not in text
+        assert "DuckDB Python package" not in text
+        assert "test.pypi.org" not in text
+        assert "unsafe-best-match" not in text
         for required in required_fragments:
             assert required in text, f"{name} is missing {required!r}"
+
+
+def test_readmes_report_ray_default_end_to_end_validation():
+    english = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    chinese = (PROJECT_ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+    assert "defaults to `runner: ray`" in english
+    assert "verified with the real fixture, OCR, and Qwen" in english
+    assert "默认是 `runner: ray`" in chinese
+    assert "真实 fixture、OCR 和 Qwen" in chinese
 
 
 def test_runbooks_explain_direct_dependencies_and_service_ownership():
@@ -84,6 +99,7 @@ def test_runbooks_explain_direct_dependencies_and_service_ownership():
         "pyarrow",
         "pyyaml",
         "pytz",
+        "socksio",
         "pytest",
     )
     for name in ("docs/runbook.md", "docs/runbook.zh-CN.md"):

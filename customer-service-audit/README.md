@@ -17,7 +17,7 @@ The synthetic fixture covers four audit outcomes:
 
 ## Why Vane
 
-Vane is a multi-compute engine for multimodal data: it lets object-storage locators, audio probes, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. The checked-in configuration defaults to the `local` Runner; `runtime.yml` can switch to the `ray` Runner without changing the relation code. Local runs one driver-owned faster-whisper engine and attaches an immutable result lookup; Ray initializes the engine inside an isolated stateful Actor worker.
+Vane is a multi-compute engine for multimodal data: it lets object-storage locators, audio probes, SQL, stateless Python UDFs, stateful actors, and AI models work together in one composable and traceable Relation pipeline. Vane also separates pipeline logic from execution backends. The checked-in configuration defaults to the `ray` Runner, whose full MinIO, faster-whisper Actor, and Qwen path is verified end to end on a local Ray runtime. Local remains a supported fallback that runs one driver-owned faster-whisper engine and attaches an immutable result lookup.
 
 ## Architecture
 
@@ -37,7 +37,7 @@ The core relation path is:
 ```text
 stg_calls / stg_run_config
   -> int_call_inputs -> int_call_probe_udf -> int_call_facts
-  -> int_call_transcript_udf -> int_transcript_facts
+  -> int_call_transcript_udf -> int_transcript_quality_udf -> int_transcript_facts
   -> int_call_analysis_ai (vane.ai.prompt)
   -> int_analysis_validation_inputs -> int_analysis_validation_udf
   -> int_analysis_facts -> call_audit_report
@@ -53,13 +53,13 @@ stg_calls / stg_run_config
 
 ## Run the demo
 
-This demo requires CPython 3.12 and pins the public PyPI release `vane-ai==0.1.0a1`. The release provides CPython 3.10, 3.11, and 3.12 `manylinux_2_28_x86_64` wheels (glibc 2.28 or newer), so run it on x86_64 Linux (or WSL). Follow the [complete runbook](docs/runbook.md) to create the environment, install Vane with `python -m pip install vane-ai`, install the demo with `python -m pip install -r requirements.txt`, and prepare running MinIO and Qwen services. Then run:
+This demo requires CPython 3.12 and pins `vane-ai[openai]==0.1.0`. The validated setup installs Vane and its dependencies from PyPI with uv. Follow the [complete runbook](docs/runbook.md) for the exact install commands and to prepare running MinIO and Qwen services. Then run:
 
 ```bash
 python scripts/run_demo.py e2e
 ```
 
-`runtime.yml` defaults to `runner: local`. Set it to `runner: ray` and connect a Ray cluster to exercise the distributed Actor and AI Relation path.
+`runtime.yml` defaults to `runner: ray`. That checked-in path was verified with the real fixture, ASR, and Qwen service on a local Ray runtime. A multi-node target cluster still needs an infrastructure smoke test for shared paths, worker credentials, and capacity.
 
 A successful run prints:
 
@@ -76,7 +76,7 @@ There is no AI mock fallback: unavailable services, unusable audio, invalid AI J
 ```text
 customer-service-audit/
 ├── pyproject.toml
-│   # Declares Python/runtime dependencies, including the exact public-PyPI Vane pin.
+│   # Declares Python/runtime dependencies, including the exact Vane pin.
 │
 ├── requirements.txt
 │   # Installs this source tree and its fast-test extra from pyproject.toml.

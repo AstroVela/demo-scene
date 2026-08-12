@@ -14,6 +14,7 @@ import sys
 import wave
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 import pyarrow as pa
@@ -36,11 +37,13 @@ else:
 
 from _common import (
     PUBLIC_BACKEND_CHOICES,
+    RunnerWorkspace,
     backend_metadata_entry,
     batch_udf_options,
     merge_backend_metadata,
     positive_int,
-    require_local_relation_runner,
+    read_csv_as_strings,
+    require_ray_runner,
     table_from_rows,
     tokenize,
     write_json,
@@ -531,6 +534,7 @@ def source_mode(input_path: Path) -> str:
 
 def build_feature_relations(
     conn: Any,
+    workspace: RunnerWorkspace,
     raw_assets: Any,
     args: argparse.Namespace,
 ) -> tuple[Any, dict[str, dict[str, Any]]]:
@@ -541,28 +545,31 @@ def build_feature_relations(
         "audio": "process_audio_batch",
         "text": "process_text_batch",
     }
-    relations: list[Any] = []
+    branch_paths: list[Path] = []
     backend_metadata: dict[str, dict[str, Any]] = {}
     for modality in SUPPORTED_MODALITIES:
         source = raw_assets.filter(f"modality = '{modality}'").order("record_id")
-        relations.append(
-            source.map_batches(
-                importable_batch_function(stage_functions[modality]),
-                schema=TRAINING_FEATURE_SCHEMA,
-                batch_size=args.batch_size,
-                **udf_options,
+        branch_paths.append(
+            workspace.write_relation(
+                f"process-{modality}",
+                source.map_batches(
+                    importable_batch_function(stage_functions[modality]),
+                    schema=TRAINING_FEATURE_SCHEMA,
+                    batch_size=args.batch_size,
+                    **udf_options,
+                ),
             )
         )
-        backend_metadata[f"process_{modality}"] = backend_metadata_entry(args.execution_backend)
+        backend_metadata[f"process_{modality}"] = backend_metadata_entry(
+            args.execution_backend
+        )
 
-    features = relations[0]
-    for relation in relations[1:]:
-        features = features.union(relation)
-    return features, backend_metadata
+    return conn.read_parquet([str(path) for path in branch_paths]), backend_metadata
 
 
 def write_artifacts(
     *,
+    workspace: RunnerWorkspace,
     output_dir: Path,
     raw_assets: Any,
     feature_records: Any,
@@ -583,10 +590,22 @@ def write_artifacts(
         "rejected_rows": relation_row_count(rejected_records),
         "modality_summary_rows": relation_row_count(modality_summary),
     }
-    feature_records.write_parquet(str(output_dir / "feature_records.parquet"))
-    training_release.write_parquet(str(output_dir / "training_release.parquet"))
-    rejected_records.write_csv(str(output_dir / "rejected_records.csv"))
-    modality_summary.write_csv(str(output_dir / "modality_summary.csv"))
+    workspace.write_parquet(
+        feature_records,
+        output_dir / "feature_records.parquet",
+    )
+    workspace.write_parquet(
+        training_release,
+        output_dir / "training_release.parquet",
+    )
+    workspace.write_csv(
+        rejected_records,
+        output_dir / "rejected_records.csv",
+    )
+    workspace.write_csv(
+        modality_summary,
+        output_dir / "modality_summary.csv",
+    )
     write_json(
         output_dir / "manifest.json",
         {
@@ -631,7 +650,8 @@ def write_artifacts(
 
 
 def run(args: argparse.Namespace) -> None:
-    runner = require_local_relation_runner(vane.current_config().runner)
+    runner = vane.current_config().runner
+    require_ray_runner(runner)
     input_path = validate_input_path(Path(args.input))
     if source_mode(input_path) == "public_snapshot":
         snapshot_verification = verify_public_asset_snapshot(
@@ -640,60 +660,74 @@ def run(args: argparse.Namespace) -> None:
         )
     else:
         snapshot_verification = {"status": "not_applicable"}
-    conn = vane.connect()
-    input_relation = conn.read_csv(str(input_path), header=True)
-    raw_assets_rel = project_raw_assets(input_relation)
-    conn.sql("drop table if exists raw_assets")
-    raw_assets_rel.order("record_id").to_table("raw_assets")
-    raw_assets = conn.sql("select * from raw_assets")
-    modalities = validate_modalities(raw_assets)
+    with TemporaryDirectory(prefix="vane-multimodal-ray-") as workspace_root:
+        conn = vane.connect()
+        workspace = RunnerWorkspace(Path(workspace_root), conn)
+        input_relation = workspace.stage_table(
+            "input-assets",
+            read_csv_as_strings(input_path),
+        )
+        raw_assets = workspace.materialize_view(
+            "raw_assets",
+            project_raw_assets(input_relation).order("record_id"),
+        )
+        modalities = validate_modalities(raw_assets)
 
-    features_rel, backend_metadata = build_feature_relations(conn, raw_assets, args)
-    conn.sql("drop table if exists feature_records")
-    features_rel.order("modality, record_id").to_table("feature_records")
-    feature_records = conn.sql("select * from feature_records")
+        features_rel, backend_metadata = build_feature_relations(
+            conn,
+            workspace,
+            raw_assets,
+            args,
+        )
+        feature_records = workspace.materialize_view(
+            "feature_records",
+            features_rel.order("modality, record_id"),
+        )
 
-    training_release_rel = feature_records.filter("decision = 'accepted'").order(
-        "split, modality, record_id"
-    )
-    conn.sql("drop table if exists training_release")
-    training_release_rel.to_table("training_release")
-    training_release = conn.sql("select * from training_release")
+        training_release = workspace.materialize_view(
+            "training_release",
+            feature_records.filter("decision = 'accepted'").order(
+                "split, modality, record_id"
+            ),
+        )
+        rejected_records = workspace.materialize_view(
+            "rejected_records",
+            feature_records.filter("decision = 'rejected'").order(
+                "quality_score, modality, record_id"
+            ),
+        )
+        modality_summary = workspace.materialize_view(
+            "modality_summary",
+            feature_records.aggregate(
+                """
+                modality,
+                count(*) as records,
+                cast(sum(byte_size) as bigint) as total_bytes,
+                round(avg(quality_score), 3) as avg_quality_score,
+                cast(
+                  sum(case when decision = 'accepted' then 1 else 0 end) as bigint
+                ) as accepted,
+                cast(
+                  sum(case when decision = 'rejected' then 1 else 0 end) as bigint
+                ) as rejected
+                """
+            ).order("modality"),
+        )
 
-    rejected_records_rel = feature_records.filter("decision = 'rejected'").order(
-        "quality_score, modality, record_id"
-    )
-    conn.sql("drop table if exists rejected_records")
-    rejected_records_rel.to_table("rejected_records")
-    rejected_records = conn.sql("select * from rejected_records")
-
-    modality_summary_rel = feature_records.aggregate(
-        """
-        modality,
-        count(*) as records,
-        sum(byte_size) as total_bytes,
-        round(avg(quality_score), 3) as avg_quality_score,
-        sum(case when decision = 'accepted' then 1 else 0 end) as accepted,
-        sum(case when decision = 'rejected' then 1 else 0 end) as rejected
-        """
-    ).order("modality")
-    conn.sql("drop table if exists modality_summary")
-    modality_summary_rel.to_table("modality_summary")
-    modality_summary = conn.sql("select * from modality_summary")
-
-    counts = write_artifacts(
-        output_dir=Path(args.output_dir),
-        raw_assets=raw_assets,
-        feature_records=feature_records,
-        training_release=training_release,
-        rejected_records=rejected_records,
-        modality_summary=modality_summary,
-        modalities=modalities,
-        backend_metadata=backend_metadata,
-        snapshot_verification=snapshot_verification,
-        runner=runner,
-        args=args,
-    )
+        counts = write_artifacts(
+            workspace=workspace,
+            output_dir=Path(args.output_dir),
+            raw_assets=raw_assets,
+            feature_records=feature_records,
+            training_release=training_release,
+            rejected_records=rejected_records,
+            modality_summary=modality_summary,
+            modalities=modalities,
+            backend_metadata=backend_metadata,
+            snapshot_verification=snapshot_verification,
+            runner=runner,
+            args=args,
+        )
     print(f"Raw assets: {counts['raw_record_rows']}")
     print(f"Released records: {counts['release_rows']}")
     print(f"Rejected records: {counts['rejected_rows']}")
@@ -710,17 +744,23 @@ def parse_args() -> argparse.Namespace:
         "--execution-backend",
         choices=PUBLIC_BACKEND_CHOICES,
         default="auto",
-        help="Let Vane infer the backend, or pin a task backend explicitly.",
+        help="Use RayRunner's ray_task default, or pin a task backend explicitly.",
     )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
     try:
-        require_local_relation_runner(vane.current_config().runner)
         validate_input_path(Path(args.input))
-    except (RuntimeError, FileNotFoundError) as exc:
+    except FileNotFoundError as exc:
         parser.error(str(exc))
     return args
 
 
+def main() -> None:
+    try:
+        run(parse_args())
+    finally:
+        vane.teardown_runner()
+
+
 if __name__ == "__main__":
-    run(parse_args())
+    main()

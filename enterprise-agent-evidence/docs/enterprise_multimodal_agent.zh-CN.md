@@ -41,9 +41,11 @@ evidence_title, claim_key, claim_value
 
 ~~~python
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import vane
 
+from src._common import RunnerWorkspace
 from src.enterprise_multimodal_agent import (
     DEFAULT_ASSET_CATALOG,
     DEFAULT_INPUT_DIR,
@@ -51,16 +53,19 @@ from src.enterprise_multimodal_agent import (
 )
 
 conn = vane.connect()
+workspace_dir = TemporaryDirectory(prefix="vane-enterprise-ray-")
+workspace = RunnerWorkspace(Path(workspace_dir.name), conn)
 cases, requirements, public_assets, evidence_links, modalities = (
     materialize_sources(
         conn,
+        workspace,
         Path(DEFAULT_INPUT_DIR),
         Path(DEFAULT_ASSET_CATALOG),
     )
 )
 ~~~
 
-默认场景先通过 `scenario_snapshot.json` 校验三张 CSV。`materialize_sources` 再调用 `.read_csv()` 读取场景表和资产清单，并执行以下完整性检查：
+默认场景先通过 `scenario_snapshot.json` 校验三张 CSV。`materialize_sources` 再用 `read_csv_as_strings` 将 CSV 读入 Arrow、暂存为 Parquet，并交给 RayRunner 读取，然后执行以下完整性检查：
 
 - 必填字段是否为空，日期是否有效，要求的模态是否合法；
 - 案例 ID、要求组合、证据记录 ID 和资产 ID 是否重复；
@@ -95,21 +100,28 @@ stage_functions = {
     "text": "process_text_asset_batch",
 }
 
-relations = []
+branch_paths = []
 for modality in modalities:
     source = public_assets.filter(
         f"modality = '{modality}'"
     ).order("record_id")
-    relations.append(
-        source.map_batches(
-            importable_batch_function(stage_functions[modality]),
-            schema=ASSET_FEATURE_SCHEMA,
-            batch_size=4,
+    branch_paths.append(
+        workspace.write_relation(
+            f"process-{modality}-asset",
+            source.map_batches(
+                importable_batch_function(stage_functions[modality]),
+                schema=ASSET_FEATURE_SCHEMA,
+                batch_size=4,
+            ),
         )
     )
+
+asset_features = conn.read_parquet(
+    [str(path) for path in branch_paths]
+)
 ~~~
 
-四个分支通过 `union` 合并成 5 行 `asset_features`。SQL 再将其连接到 8 行 `evidence_links`，生成案例级 `evidence_features`。每个唯一文件只需校验和解析一次。
+RayRunner 将四个分支分别写入 Parquet 工作区，再通过多文件 Parquet 扫描合并成 5 行 `asset_features`。SQL 随后将其连接到 8 行 `evidence_links`，生成案例级 `evidence_features`。每个唯一文件只需校验和解析一次。
 
 `evidence_features` 的公共契约包括：
 
@@ -188,16 +200,24 @@ end
 
 ## 产物
 
-Relation writer 写出完整证据和审核结果：
+所有输出都由 RayRunner 执行。Parquet 产物使用 Relation writer；`workspace.write_csv` 会新建一条 Ray 投影，再将 Arrow 结果写为便于审核的 CSV：
 
 ~~~python
-agent_context.write_parquet(str(OUTPUT_DIR / "agent_context.parquet"))
-asset_features.write_parquet(str(OUTPUT_DIR / "asset_features.parquet"))
-evidence_features.write_parquet(str(OUTPUT_DIR / "evidence_features.parquet"))
-evidence_gaps.write_csv(str(OUTPUT_DIR / "evidence_gaps.csv"))
-evidence_conflicts.write_csv(str(OUTPUT_DIR / "evidence_conflicts.csv"))
-review_queue.write_csv(str(OUTPUT_DIR / "review_queue.csv"))
-status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
+workspace.write_parquet(
+    agent_context, OUTPUT_DIR / "agent_context.parquet"
+)
+workspace.write_parquet(
+    asset_features, OUTPUT_DIR / "asset_features.parquet"
+)
+workspace.write_parquet(
+    evidence_features, OUTPUT_DIR / "evidence_features.parquet"
+)
+workspace.write_csv(evidence_gaps, OUTPUT_DIR / "evidence_gaps.csv")
+workspace.write_csv(
+    evidence_conflicts, OUTPUT_DIR / "evidence_conflicts.csv"
+)
+workspace.write_csv(review_queue, OUTPUT_DIR / "review_queue.csv")
+workspace.write_csv(status_summary, OUTPUT_DIR / "status_summary.csv")
 ~~~
 
 | 文件 | 内容 |
@@ -216,7 +236,7 @@ status_summary.write_csv(str(OUTPUT_DIR / "status_summary.csv"))
 默认运行：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
+.venv/bin/python src/enterprise_multimodal_agent.py
 ~~~
 
 输出：
@@ -237,14 +257,14 @@ Output directory: output/enterprise_multimodal_agent
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ~~~
 
-自定义场景使用 `--input-dir`，自定义资产清单使用 `--asset-catalog`。`--execution-backend` 可以固定为 `subprocess_task` 或 `ray_task`；Relation SQL 中的命名表位于客户端连接，因此必须使用 `local-fast` runner。
+自定义场景使用 `--input-dir`，自定义资产清单使用 `--asset-catalog`。Vane 0.1.0 默认使用 RayRunner，因此 `--execution-backend auto` 会解析为 `ray_task`；也可以显式指定 `ray_task` 或 `subprocess_task`。中间 Relation 通过 Parquet 工作区物化，保证分布式 UDF 获得所需的 Ray query 上下文。
 
 默认运行中，只要场景 CSV、资产清单、来源清单或文件与固定快照不一致，脚本就会在处理前失败。`manifest.json` 对默认输入使用仓库相对路径。自定义输入仍会执行语义完整性检查，但标记为 `custom_inputs`，不视为已通过固定快照验证。
 
 聚焦测试：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
+.venv/bin/python -m unittest -v tests.test_enterprise_multimodal_agent
 ~~~
 
 ## 示例边界

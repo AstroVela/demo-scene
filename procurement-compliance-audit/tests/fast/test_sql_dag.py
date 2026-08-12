@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 import re
 
-import duckdb
 import pyarrow as pa
+import vane
 
 from procurement_audit_sql_demo.fixture_loader import build_fixture
 from procurement_audit_sql_demo.vane_functions import (
@@ -112,13 +112,12 @@ def _run_dag(
     swap_document_roles: bool = False,
 ):
     fixture = build_fixture(FIXTURE_DIR)
-    connection = duckdb.connect()
+    connection = vane.connect()
     _register_table(connection, "input_project", fixture.project)
     _register_table(connection, "input_suppliers", fixture.suppliers)
     _register_table(connection, "input_scores", fixture.scores)
     _register_table(connection, "input_evidence", fixture.evidence)
-    connection.create_function(
-        "evidence_ocr_json",
+    vane.attach_function(
         lambda _bucket, _object_key: stable_json(
             {
                 "status": "success",
@@ -128,14 +127,17 @@ def _run_dag(
                 "error": None,
             }
         ),
-        ["VARCHAR", "VARCHAR"],
-        "VARCHAR",
+        alias="evidence_ocr_json",
+        connection=connection,
+        parameters=["VARCHAR", "VARCHAR"],
+        return_dtype="VARCHAR",
     )
-    connection.create_function(
-        "validate_audit_fact_json",
+    vane.attach_function(
         validate_audit_fact_json,
-        ["VARCHAR"],
-        "VARCHAR",
+        alias="validate_audit_fact_json",
+        connection=connection,
+        parameters=["VARCHAR"],
+        return_dtype="VARCHAR",
     )
     for relative_path in SQL_ORDER[:4]:
         connection.execute((SQL_ROOT / relative_path).read_text(encoding="utf-8"))

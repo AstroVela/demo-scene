@@ -17,7 +17,7 @@
 
 ## 为什么用 Vane
 
-Vane 是面向多模态数据的混合计算引擎：它让对象存储定位符、音频探测、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追溯的 Relation 流水线中协同工作。Vane 还把流水线逻辑与执行后端解耦：签入的配置默认使用 `local` Runner，`runtime.yml` 可以切换到 `ray` Runner 而无需修改 Relation 代码。Local 在 driver 上运行一个 faster-whisper 引擎并挂载不可变的结果查找表；Ray 则在隔离的有状态 Actor worker 内部初始化引擎。
+Vane 是面向多模态数据的混合计算引擎：它让对象存储定位符、音频探测、SQL、无状态 Python UDF、有状态 Actor 和 AI 模型在同一条可组合、可追溯的 Relation 流水线中协同工作。Vane 还把流水线逻辑与执行后端解耦：签入的配置默认使用 `ray` Runner，并已在本地 Ray runtime 上端到端验证 MinIO、faster-whisper Actor 与 Qwen 完整路径。Local 仍是受支持的回退路径，在 driver 上运行一个 faster-whisper 引擎并挂载不可变的结果查找表。
 
 ## 架构
 
@@ -37,7 +37,7 @@ MinIO recordings（4 段合成通话）
 ```text
 stg_calls / stg_run_config
   -> int_call_inputs -> int_call_probe_udf -> int_call_facts
-  -> int_call_transcript_udf -> int_transcript_facts
+  -> int_call_transcript_udf -> int_transcript_quality_udf -> int_transcript_facts
   -> int_call_analysis_ai (vane.ai.prompt)
   -> int_analysis_validation_inputs -> int_analysis_validation_udf
   -> int_analysis_facts -> call_audit_report
@@ -53,13 +53,13 @@ stg_calls / stg_run_config
 
 ## 运行演示
 
-本演示要求 CPython 3.12，并固定公开 PyPI 发行版 `vane-ai==0.1.0a1`。该发行版提供 CPython 3.10、3.11、3.12 的 `manylinux_2_28_x86_64` wheel（glibc 2.28 及以上），因此请在 x86_64 Linux（或 WSL）上运行。按照[完整 runbook](docs/runbook.zh-CN.md) 创建环境，用 `python -m pip install vane-ai` 安装 Vane，用 `python -m pip install -r requirements.txt` 安装演示，并准备运行中的 MinIO 和 Qwen 服务。然后执行：
+本演示要求 CPython 3.12，并固定 `vane-ai[openai]==0.1.0`。已验证环境使用 uv 从 PyPI 安装 Vane 及其依赖。请按照[完整 runbook](docs/runbook.zh-CN.md) 执行准确的安装命令，并准备运行中的 MinIO 和 Qwen 服务。然后执行：
 
 ```bash
 python scripts/run_demo.py e2e
 ```
 
-`runtime.yml` 默认为 `runner: local`。将其改为 `runner: ray` 并连接 Ray 集群即可演练分布式 Actor 与 AI Relation 路径。
+`runtime.yml` 默认为 `runner: ray`，该路径已在本地 Ray runtime 上使用真实 fixture、ASR 和 Qwen 服务跑通。真实多节点目标集群仍需针对共享路径、worker 凭据和资源容量单独执行基础设施 smoke test。
 
 成功运行会打印：
 
@@ -76,7 +76,7 @@ verified 4 call analyses: CALL-BILLING-CALM=(billing_dispute,neutral), CALL-PRAI
 ```text
 customer-service-audit/
 ├── pyproject.toml
-│   # 声明 Python/运行时依赖，包括固定的公开 PyPI Vane 版本。
+│   # 声明 Python/运行时依赖，包括固定的 Vane 版本。
 │
 ├── requirements.txt
 │   # 按 pyproject.toml 安装本源码树及其 fast-test extra。

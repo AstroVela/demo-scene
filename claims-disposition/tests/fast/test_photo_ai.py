@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 
@@ -20,8 +21,26 @@ class FakeSession:
         return table
 
 
+class FakeRelation:
+    def __init__(self, table):
+        self.table = table
+
+    def select(self, *expressions):
+        names = [str(expression) for expression in expressions]
+        return FakeRelation(self.table.select(names))
+
+    def fetchall(self):
+        return [
+            tuple(row[name] for name in self.table.column_names)
+            for row in self.table.to_pylist()
+        ]
+
+
 def test_local_runner_uses_vane_provider_without_relation_actor(monkeypatch):
-    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="local",
+    )
     image_bytes = b"fixture image bytes"
     digest = hashlib.sha256(image_bytes).hexdigest()
     object_key = "claims/CLM-001/photos/PHOTO-001.png"
@@ -100,5 +119,85 @@ def test_local_runner_uses_vane_provider_without_relation_actor(monkeypatch):
             "file_order": 1,
             "photo_sha256": digest,
             "raw_damage_response": '{"damage_visible":true}',
+        }
+    ]
+
+
+def test_ray_prompt_projects_appended_response_before_materializing(monkeypatch):
+    config = replace(
+        load_runtime_config(PROJECT_ROOT / "runtime.yml"),
+        runner="ray",
+    )
+    image_bytes = b"fixture image bytes"
+    digest = hashlib.sha256(image_bytes).hexdigest()
+    object_key = "claims/CLM-001/photos/PHOTO-001.png"
+    response = '{"damage_visible":true}'
+    material_rows = [
+        {
+            "claim_id": "CLM-001",
+            "description": "Front bumper damage",
+            "model_input_usable": True,
+            "usable_photo_inputs_json": stable_json(
+                [
+                    {
+                        "file_id": "PHOTO-001",
+                        "file_order": 1,
+                        "bucket": config.minio.bucket,
+                        "object_key": object_key,
+                        "sha256": digest,
+                        "photo_quality": {"photo_usable": True},
+                    }
+                ]
+            ),
+        }
+    ]
+    materialized_columns = []
+
+    class Store:
+        def get_bytes(self, bucket, key):
+            assert (bucket, key) == (config.minio.bucket, object_key)
+            return image_bytes
+
+    def fake_prompt(relation, _messages, **_options):
+        table = relation.table.append_column(
+            "raw_damage_response",
+            pa.array([response], type=pa.string()),
+        )
+        assert table.column_names == [
+            "claim_id",
+            "file_id",
+            "file_order",
+            "photo_sha256",
+            "prompt_text",
+            "image_bytes",
+            "raw_damage_response",
+        ]
+        return FakeRelation(table)
+
+    def materialize(relation):
+        materialized_columns.append(relation.table.column_names)
+        return relation.table
+
+    monkeypatch.setattr(photo_ai, "MinioStore", lambda _config: Store())
+    monkeypatch.setattr(photo_ai, "probe_qwen", lambda _config: None)
+    monkeypatch.setattr(vane.ai, "prompt", fake_prompt)
+
+    result = photo_ai.build_photo_ai_relation(
+        material_rows,
+        FakeSession(),
+        config,
+        request_relation_factory=FakeRelation,
+        response_materializer=materialize,
+        result_factory=lambda table: table,
+    )
+
+    assert materialized_columns == [["raw_damage_response"]]
+    assert result.to_pylist() == [
+        {
+            "claim_id": "CLM-001",
+            "file_id": "PHOTO-001",
+            "file_order": 1,
+            "photo_sha256": digest,
+            "raw_damage_response": response,
         }
     ]

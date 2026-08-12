@@ -2,36 +2,27 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Build auditable multimodal context before evidence reaches an enterprise Agent.
-The pipeline parses document, text, image, and audio assets, joins them to
-business requirements, and uses SQL to find missing evidence, conflicting
-claims, stale observations, and media risks. It writes governed Agent context
-and an ordered review queue; model execution and retrieval are outside this
-example.
+Build auditable multimodal context before evidence reaches an enterprise Agent. The pipeline parses document, text, image, and audio assets, joins them to business requirements, and uses SQL to find missing evidence, conflicting claims, stale observations, and media risks. It writes governed Agent context and an ordered review queue; model execution and retrieval are outside this example.
 
 ## Vane Data Focus
 
-- Read scenario tables and the asset catalog as Relations, then validate and
-  join them with SQL.
-- Parse each referenced public asset once through a typed `map_batches` branch
-  before linking it to one or more cases.
-- Build evidence gaps, claim conflicts, governed context, and the ordered
-  review queue with Relation SQL, aggregations, and writers.
+- Read scenario tables and the asset catalog as Relations, then validate and join them with SQL.
+- Parse each referenced public asset once through a typed `map_batches` branch before linking it to one or more cases.
+- Build evidence gaps, claim conflicts, governed context, and the ordered review queue with Relation SQL, aggregations, and writers.
 
-The default offline data combines five pinned public files with four synthetic
-cases whose gap, conflict, freshness, and review paths are reproducible.
+The default offline data combines five pinned public files with four synthetic cases whose gap, conflict, freshness, and review paths are reproducible.
 
 ## Quick Start
 
-Python 3.10 or newer is required. From this directory:
-
-`requirements.txt` installs the validated `vane-ai==0.1.0a1` release from public PyPI. Vane can also be installed directly with `pip install vane-ai`.
+Python 3.12 and uv are used for the validated setup. Vane 0.1.0 and its dependencies are resolved from PyPI.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
-VANE_RUNNER=local-fast .venv/bin/python src/enterprise_multimodal_agent.py
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install 'vane-ai==0.1.0'
+uv pip install -r requirements.txt
+uv pip check
+.venv/bin/python src/enterprise_multimodal_agent.py
 ```
 
 Expected summary:
@@ -49,7 +40,7 @@ Output directory: output/enterprise_multimodal_agent
 Run the focused tests with:
 
 ```bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
+.venv/bin/python -m unittest discover -s tests \
   -p 'test_enterprise_multimodal_agent.py' -v
 ```
 
@@ -58,17 +49,12 @@ VANE_RUNNER=local-fast .venv/bin/python -m unittest discover -s tests \
 Before processing the default data, the executable verifies:
 
 - every scenario CSV against its pinned columns, row count, and SHA-256;
-- the public asset catalog, source manifest, and five payloads against the
-  public snapshot;
+- the public asset catalog, source manifest, and five payloads against the public snapshot;
 - required fields, dates, modalities, primary keys, and foreign keys;
 - claim-key/value pairing and observation dates relative to review dates;
-- payload hashes and modality-specific UTF-8, SVG, and WAV parsing rules,
-  including explicit rejection of invalid UTF-8 and non-positive WAV sample
-  rates.
+- payload hashes and modality-specific UTF-8, SVG, and WAV parsing rules, including explicit rejection of invalid UTF-8 and non-positive WAV sample rates.
 
-Only assets referenced by an evidence link enter the batch UDFs. Default paths
-in `manifest.json` are repository-relative, so generated metadata does not leak
-a developer workstation path.
+Only assets referenced by an evidence link enter the batch UDFs. Default paths in `manifest.json` are repository-relative, so generated metadata does not leak a developer workstation path.
 
 ## Outputs
 
@@ -90,8 +76,7 @@ The default run writes to `output/enterprise_multimodal_agent/`:
 - [English tutorial](docs/enterprise_multimodal_agent.en.md)
 - [中文教程](docs/enterprise_multimodal_agent.zh-CN.md)
 
-The tutorials describe the schemas, Vane APIs, SQL policy, output contract,
-custom-input behavior, and current example scope.
+The tutorials describe the schemas, Vane APIs, SQL policy, output contract, custom-input behavior, and current example scope.
 
 ## Refreshing Public Assets
 
@@ -101,8 +86,7 @@ Re-download the fixed public sources and verify their expected hashes with:
 .venv/bin/python scripts/prepare_enterprise_agent_assets.py --refresh
 ```
 
-This is the only operation that requires network access. A changed upstream
-payload fails verification instead of silently replacing the snapshot.
+This is the only operation that requires network access. A changed upstream payload fails verification instead of silently replacing the snapshot.
 
 ## Repository Layout
 

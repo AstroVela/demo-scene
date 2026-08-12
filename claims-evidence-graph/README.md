@@ -1,12 +1,8 @@
 # Claims Evidence Graph with Vane
 
-Build auditable evidence tables from multimodal claim materials using Vane
-relations, Python batch processors, SQL aggregation, and optional VLM image
-understanding.
+Build auditable evidence tables from multimodal claim materials using Vane relations, Python batch processors, SQL aggregation, and optional VLM image understanding.
 
-The public demo ships with a synthetic fixture generator. It does not include
-real claim data, model weights, generated outputs, or third-party datasets with
-unclear redistribution terms.
+The public demo ships with a synthetic fixture generator. It does not include real claim data, model weights, generated outputs, or third-party datasets with unclear redistribution terms.
 
 ## Architecture
 
@@ -15,21 +11,18 @@ photos / scanned documents / attachment metadata
   -> normalized claim and file manifests
   -> Arrow table / Vane relation
   -> relation.map_batches(...) photo and document processors
-  -> optional semantic profile: vane.ai.prompt(image_columns=["file_bytes"])
+  -> optional semantic profile: vane.ai.prompt(..., [instruction, file_bytes])
   -> DuckDB SQL aggregation
   -> JSONL / Parquet / run metadata / validation report
 ```
 
-The demo focuses on the data plane: stable table contracts, batch execution,
-image-column handoff to a VLM, SQL review aggregation, and auditable output
-materialization. It is not an insurance decisioning system and does not prove
-real claim adjudication accuracy.
+The demo focuses on the data plane: stable table contracts, batch execution, image-column handoff to a VLM, SQL review aggregation, and auditable output materialization. It is not an insurance decisioning system and does not prove real claim adjudication accuracy.
 
 ## Quick Start
 
 Run the synthetic fixture demo:
 
-Vane is installed from public PyPI. The reproducible environment currently constrains the public release to `vane-ai==0.1.0a1`; outside this setup it can also be installed directly with `python -m pip install vane-ai`.
+The setup script installs the exact `vane-ai[openai]==0.1.0` wheel and its dependencies from PyPI with uv.
 
 ```bash
 cd claims-evidence-graph
@@ -39,11 +32,10 @@ cd claims-evidence-graph
 This will:
 
 1. Create `.venv` if needed.
-2. Install Python dependencies from `requirements.txt`.
+2. Install Vane 0.1.0 and the Python dependencies from `requirements.txt`.
 3. Generate a synthetic local workspace under `workspace/quality-fixtures`.
 4. Run the deterministic `baseline` profile.
-5. Write JSONL outputs and validation metadata under
-   `workspace/quality-fixtures/outputs`.
+5. Write JSONL outputs and validation metadata under `workspace/quality-fixtures/outputs`.
 
 Expected fixture counts:
 
@@ -68,8 +60,7 @@ The run is valid when `input.ok` and `output.ok` are both `true`.
 
 ## Example Queries
 
-The fixture output is plain JSONL, so it can be inspected directly or queried
-with DuckDB:
+The fixture output is plain JSONL, so it can be inspected directly or queried with DuckDB:
 
 ```bash
 duckdb -init queries.sql
@@ -107,23 +98,19 @@ photo_model_runs.jsonl
 photo_damage_eval_metrics.jsonl  # when photo labels are supplied
 ```
 
-Treat `validation_report.json` as the gate before drawing conclusions from any
-evidence table. If semantic validation fails, retry or route the packet to human
-review rather than trusting partial model output.
+Treat `validation_report.json` as the gate before drawing conclusions from any evidence table. If semantic validation fails, retry or route the packet to human review rather than trusting partial model output.
 
 ## Semantic Profile
 
-The `semantic` profile adds photo damage evidence by calling an
-OpenAI-compatible VLM endpoint through `vane.ai.prompt`.
+The `semantic` profile adds photo damage evidence by calling an OpenAI-compatible VLM endpoint through `vane.ai.prompt`.
 
 Install optional model-server dependencies only when needed:
 
 ```bash
-.venv/bin/python -m pip install -e ".[qwen]"
+uv pip install --python .venv/bin/python -e ".[qwen]"
 ```
 
-Start a local Qwen adapter after downloading model weights in your own
-environment:
+Start a local Qwen adapter after downloading model weights in your own environment:
 
 ```bash
 .venv/bin/claims-qwen-openai-server \
@@ -144,18 +131,17 @@ Run semantic processing against a prepared proxy workspace:
   --image-model Qwen2.5-VL-3B-Instruct \
   --image-model-base-url http://127.0.0.1:8001/v1 \
   --image-model-api-key EMPTY \
-  --execution-backend local \
+  --runner ray \
+  --execution-backend ray_task \
   --batch-size 8 \
   --skip-parquet
 ```
 
-Use `--profile semantic_strict --max-image-model-errors 0` when any VLM failure
-should fail the run instead of being routed to review.
+Use `--profile semantic_strict --max-image-model-errors 0` when any VLM failure should fail the run instead of being routed to review.
 
 ## Full Proxy Workspace
 
-For a fuller proxy-data run, prepare data locally after checking each source
-license. Do not commit raw data to this repository.
+For a fuller proxy-data run, prepare data locally after checking each source license. Do not commit raw data to this repository.
 
 ```text
 workspace/
@@ -177,34 +163,32 @@ Run the deterministic profile on that workspace:
   --data-root workspace/claims-poc \
   --output-dir workspace/outputs-baseline \
   --profile baseline \
-  --execution-backend local \
+  --runner ray \
+  --execution-backend ray_task \
   --batch-size 8 \
   --skip-parquet
 ```
 
-The manifests are an ingestion contract for the demo. In a real system, an
-upload service, object-store inventory, claim API, or spreadsheet export should
-produce equivalent claim/file relations automatically.
+The manifests are an ingestion contract for the demo. In a real system, an upload service, object-store inventory, claim API, or spreadsheet export should produce equivalent claim/file relations automatically.
 
 ## How It Works
 
-The pipeline is implemented as an importable Python package under
-`src/claims_evidence_graph_pipeline`:
+The pipeline is implemented as an importable Python package under `src/claims_evidence_graph_pipeline`:
 
 - `contracts.py` defines Arrow and DuckDB table contracts.
 - `quality_fixtures.py` builds the public synthetic fixture workspace.
-- `pipeline.py` orchestrates validation, Vane relation execution, SQL
-  aggregation, and output materialization.
+- `pipeline.py` orchestrates validation, Vane relation execution, SQL aggregation, and output materialization.
 - `udfs.py` contains the photo quality and document extraction batch processors.
 - `photo_vlm.py` contains the optional semantic image evidence path.
 - `validation.py` validates inputs and outputs before results are trusted.
 
-The same code path supports local, Ray task, and Ray actor execution backends.
+The checked-in defaults use Vane's RayRunner with the `ray_task` UDF backend. Driver-built Arrow inputs are staged as Parquet under the writable workspace, read back as runner-visible Relations, and materialized again between query stages. This preserves the query-scoped context required by distributed UDFs and `vane.ai.prompt`.
+
+LocalRunner remains available with the paired `--runner local --execution-backend local` options; `local` maps to Vane's `subprocess_task` backend. A LocalRunner cannot be combined with `ray_task`, and the pipeline rejects that mismatch before loading inputs. For a multi-node Ray cluster, mount `--workspace-root` at the same absolute path on every worker and provision model credentials through cluster runtime or secret management.
 
 ## Tests
 
-Tests are intentionally kept as fast contract checks for the package code. They
-do not require raw proxy data or a running model endpoint.
+Tests are intentionally kept as fast contract checks for the package code. They do not require raw proxy data or a running model endpoint.
 
 ```bash
 .venv/bin/python -m pytest tests/fast/test_claims_evidence_graph_pipeline.py -q
@@ -226,11 +210,7 @@ Remove generated data and the local virtual environment:
 
 ## Data And Privacy Policy
 
-- Do not commit real claims, customer photos, private documents, API keys, or
-  model weights.
-- Do not commit `workspace/raw` unless every source license explicitly permits
-  redistribution.
-- Generated JSONL/Parquet outputs are reproducible artifacts and should stay
-  local unless they are intentionally curated for release.
-- The bundled fixture generator creates synthetic local data for CI and public
-  demos.
+- Do not commit real claims, customer photos, private documents, API keys, or model weights.
+- Do not commit `workspace/raw` unless every source license explicitly permits redistribution.
+- Generated JSONL/Parquet outputs are reproducible artifacts and should stay local unless they are intentionally curated for release.
+- The bundled fixture generator creates synthetic local data for CI and public demos.

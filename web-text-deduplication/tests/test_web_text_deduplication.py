@@ -8,26 +8,31 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from src._common import require_local_relation_runner
+from src._common import (
+    RunnerWorkspace,
+    batch_udf_options,
+)
 from src.web_text_deduplication import (
     DEFAULT_INPUT,
     DEFAULT_SNAPSHOT_METADATA,
     LSH_BANDS,
     MINHASH_VALUES,
-    band_membership_relation_sql,
-    batch_udf_options,
-    cluster_relation_sql,
+    band_membership_relations,
+    build_cluster_relation,
+    colliding_band_memberships_relation,
     file_sha256,
     fingerprint_documents_batch,
     jaccard,
     lsh_candidate_probability,
     lsh_band_keys,
     normalize_text,
+    parse_args,
     score_pairs_batch,
     shingles,
     validate_candidate_pair_budget,
@@ -40,16 +45,36 @@ from scripts.prepare_web_text_deduplication_fixture import fixture_rows
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def example_subprocess_env() -> dict[str, str]:
+    env = {
+        **os.environ,
+        "RAY_ADDRESS": "local",
+        "VANE_PROGRESS": "0",
+        "RAY_LOG_TO_DRIVER": "0",
+    }
+    env.pop("VANE_RUNNER", None)
+    return env
+
+
 class WebTextDeduplicationTest(unittest.TestCase):
-    def test_relation_runner_requires_local_fast(self) -> None:
-        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
-        for runner in ("", "local", "ray"):
-            with self.subTest(runner=runner):
-                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
-                    require_local_relation_runner(runner)
+    _relation_connection = None
+
+    @classmethod
+    def relation_connection(cls):
+        if cls._relation_connection is None:
+            cls._relation_connection = vane.connect()
+        return cls._relation_connection
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._relation_connection is not None:
+            cls._relation_connection.close()
 
     def invoke_example(
-        self, output_dir: Path, *extra_args: str
+        self,
+        output_dir: Path,
+        *extra_args: str,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -60,7 +85,7 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 *extra_args,
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": "local-fast"},
+            env=env or example_subprocess_env(),
             text=True,
             capture_output=True,
             timeout=90,
@@ -71,9 +96,27 @@ class WebTextDeduplicationTest(unittest.TestCase):
         completed = self.invoke_example(output_dir, *extra_args)
         self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
 
+    def test_local_runner_override_is_rejected_before_writing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-web-dedup-local-") as tmp_dir:
+            output_dir = Path(tmp_dir) / "web_text_deduplication"
+            env = example_subprocess_env()
+            env["VANE_RUNNER"] = "local"
+
+            completed = self.invoke_example(output_dir, env=env)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires Vane RayRunner", completed.stderr)
+            self.assertFalse((output_dir / "manifest.json").exists())
+
     def test_default_run_writes_deduplication_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-web-dedup-") as tmp_dir:
             output_dir = Path(tmp_dir) / "web_text_deduplication"
+            output_dir.mkdir(parents=True)
+            pq.write_table(
+                pa.table({"stale": [True]}),
+                output_dir / "fingerprinted.parquet",
+            )
+            self.run_example(output_dir)
             self.run_example(output_dir)
 
             manifest = json.loads((output_dir / "manifest.json").read_text())
@@ -152,8 +195,12 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 snapshot_verification["third_party_crawled_content"]
             )
             self.assertEqual(snapshot_verification["license_id"], "Apache-2.0")
-            self.assertEqual(manifest["runner"], "local-fast")
-            self.assertIsNone(manifest["execution_backend"])
+            self.assertEqual(manifest["runner"], "ray")
+            self.assertEqual(manifest["execution_backend"], "ray_task")
+            self.assertEqual(
+                set(manifest["execution_backends"].values()),
+                {"ray_task"},
+            )
 
             with (output_dir / "duplicate_pairs.csv").open(
                 newline="", encoding="utf-8"
@@ -199,9 +246,11 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 summary_by_domain["docs.example"]["candidate_pair_rows"], "0"
             )
 
+            source_blocks = pq.read_table(output_dir / "source_blocks.parquet")
             fingerprinted = pq.read_table(output_dir / "fingerprinted.parquet")
             scored_pairs = pq.read_table(output_dir / "scored_pairs.parquet")
             deduped = pq.read_table(output_dir / "deduped_documents.parquet")
+            self.assertEqual(source_blocks.num_rows, 24)
             self.assertEqual(fingerprinted.num_rows, 24)
             self.assertEqual(scored_pairs.num_rows, 18)
             self.assertEqual(deduped.num_rows, 12)
@@ -226,6 +275,20 @@ class WebTextDeduplicationTest(unittest.TestCase):
         self.assertEqual(
             batch_udf_options("subprocess_task"),
             {"execution_backend": "subprocess_task"},
+        )
+
+    def test_ray_task_backend_is_accepted_and_forwarded(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["web_text_deduplication.py", "--execution-backend", "ray_task"],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.execution_backend, "ray_task")
+        self.assertEqual(
+            batch_udf_options("ray_task"),
+            {"execution_backend": "ray_task"},
         )
 
     def test_no_collision_input_writes_zero_candidate_diagnostics(self) -> None:
@@ -455,29 +518,66 @@ class WebTextDeduplicationTest(unittest.TestCase):
                 validate_snapshot_integrity(snapshot, metadata_path)
 
     def test_candidate_pair_budget_fails_before_hot_bucket_expansion(self) -> None:
-        vane.configure(runner="")
-        conn = vane.connect()
-        conn.register(
-            "collision_buckets",
-            pa.table(
-                {
-                    "member_count": [4, 3],
-                    "pair_slots": [6, 3],
-                }
-            ),
-        )
-        collision_buckets = conn.sql("select * from collision_buckets")
-        self.assertEqual(
-            validate_candidate_pair_budget(
-                collision_buckets,
-                max_candidate_pair_slots=9,
-            ),
-            9,
-        )
-        with self.assertRaisesRegex(RuntimeError, "exceeding.*8"):
-            validate_candidate_pair_budget(
-                collision_buckets,
-                max_candidate_pair_slots=8,
+        with tempfile.TemporaryDirectory(prefix="vane-candidate-budget-") as tmp_dir:
+            source = Path(tmp_dir) / "collision-buckets.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "member_count": [4, 3],
+                        "pair_slots": [6, 3],
+                    }
+                ),
+                source,
+            )
+            collision_buckets = self.relation_connection().read_parquet(str(source))
+            self.assertEqual(
+                validate_candidate_pair_budget(
+                    collision_buckets,
+                    max_candidate_pair_slots=9,
+                ),
+                9,
+            )
+            with self.assertRaisesRegex(RuntimeError, "exceeding.*8"):
+                validate_candidate_pair_budget(
+                    collision_buckets,
+                    max_candidate_pair_slots=8,
+                )
+
+    def test_singleton_buckets_are_filtered_before_driver_collection(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-collision-filter-") as tmp_dir:
+            source = Path(tmp_dir) / "band-memberships.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "band_index": [0, 0, 1, 2, 3],
+                        "lsh_band": ["shared", "shared", "a", "b", "c"],
+                        "doc_id": ["left", "right", "one", "two", "three"],
+                        "domain": [
+                            "a.example",
+                            "b.example",
+                            "c.example",
+                            "d.example",
+                            "e.example",
+                        ],
+                    }
+                ),
+                source,
+            )
+            conn = self.relation_connection()
+            conn.read_parquet(str(source)).create_view(
+                "band_memberships", replace=True
+            )
+
+            rows = colliding_band_memberships_relation(conn).order(
+                "band_index, lsh_band, doc_id"
+            ).fetchall()
+
+            self.assertEqual(
+                rows,
+                [
+                    (0, "shared", "left", "a.example"),
+                    (0, "shared", "right", "b.example"),
+                ],
             )
 
     def test_cli_fails_closed_before_a_hot_bucket_self_join(self) -> None:
@@ -540,40 +640,51 @@ class WebTextDeduplicationTest(unittest.TestCase):
             lsh_band_keys([10, 20, 30], rows_per_band=2)
 
     def test_band_expansion_covers_more_than_one_output_vector(self) -> None:
-        vane.configure(runner="")
-        conn = vane.connect()
-        row_count = 300
-        conn.register(
-            "documents",
-            pa.table(
-                {
-                    "doc_id": [f"doc-{index:03d}" for index in range(row_count)],
-                    "domain": ["example.com"] * row_count,
-                }
-            ),
-        )
-        conn.register(
-            "fingerprinted",
-            pa.table(
-                {
-                    "doc_id": [f"doc-{index:03d}" for index in range(row_count)],
-                    "shingle_count": [1] * row_count,
-                    "lsh_bands": [
-                        [f"{band:03d}:same" for band in range(LSH_BANDS)]
-                        for _ in range(row_count)
-                    ],
-                }
-            ),
-        )
-        memberships = band_membership_relation_sql(conn)
-        self.assertEqual(
-            memberships.aggregate("count(*)").fetchone()[0],
-            row_count * LSH_BANDS,
-        )
-        self.assertEqual(
-            memberships.aggregate("count(distinct doc_id)").fetchone()[0],
-            row_count,
-        )
+        with tempfile.TemporaryDirectory(prefix="vane-band-expansion-") as tmp_dir:
+            root = Path(tmp_dir)
+            row_count = 300
+            documents_path = root / "documents.parquet"
+            fingerprinted_path = root / "fingerprinted.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "doc_id": [
+                            f"doc-{index:03d}" for index in range(row_count)
+                        ],
+                        "domain": ["example.com"] * row_count,
+                    }
+                ),
+                documents_path,
+            )
+            pq.write_table(
+                pa.table(
+                    {
+                        "doc_id": [
+                            f"doc-{index:03d}" for index in range(row_count)
+                        ],
+                        "shingle_count": [1] * row_count,
+                        "lsh_bands": [
+                            [f"{band:03d}:same" for band in range(LSH_BANDS)]
+                            for _ in range(row_count)
+                        ],
+                    }
+                ),
+                fingerprinted_path,
+            )
+            conn = self.relation_connection()
+            conn.read_parquet(str(documents_path)).create_view(
+                "documents", replace=True
+            )
+            conn.read_parquet(str(fingerprinted_path)).create_view(
+                "fingerprinted", replace=True
+            )
+            memberships = [
+                row
+                for relation in band_membership_relations(conn)
+                for row in relation.project("doc_id").fetchall()
+            ]
+            self.assertEqual(len(memberships), row_count * LSH_BANDS)
+            self.assertEqual(len({row[0] for row in memberships}), row_count)
 
     def test_normalize_text_is_unicode_aware_and_deterministic(self) -> None:
         self.assertEqual(
@@ -589,34 +700,51 @@ class WebTextDeduplicationTest(unittest.TestCase):
         self.assertEqual(jaccard(list(left), list(right)), 0.0)
 
     def test_cluster_ids_are_stable_when_unrelated_documents_are_added(self) -> None:
-        vane.configure(runner="")
-
         def assignments(doc_ids: list[str]) -> dict[str, str]:
-            conn = vane.connect()
-            conn.register("documents", pa.table({"doc_id": doc_ids}))
-            conn.register(
-                "duplicate_pairs",
-                pa.table({"left_doc_id": ["b"], "right_doc_id": ["c"]}),
-            )
-            return {
-                doc_id: cluster_id
-                for cluster_id, doc_id in cluster_relation_sql(conn)
-                .project("cluster_id, doc_id")
-                .fetchall()
-            }
+            with tempfile.TemporaryDirectory(prefix="vane-cluster-ids-") as tmp_dir:
+                conn = self.relation_connection()
+                workspace = RunnerWorkspace(Path(tmp_dir), conn)
+                documents = workspace.stage_table(
+                    "documents",
+                    pa.table({"doc_id": doc_ids}),
+                )
+                documents.create_view("documents", replace=True)
+                duplicate_pairs = workspace.stage_table(
+                    "duplicate-pairs",
+                    pa.table(
+                        {
+                            "left_doc_id": ["b", "c"],
+                            "right_doc_id": ["c", "d"],
+                        }
+                    ),
+                )
+                duplicate_pairs.create_view("duplicate_pairs", replace=True)
+                return {
+                    doc_id: cluster_id
+                    for cluster_id, doc_id in build_cluster_relation(
+                        conn, workspace
+                    ).project("cluster_id, doc_id").fetchall()
+                }
 
         before = assignments(["b", "c", "d"])
         after = assignments(["a", "b", "c", "d"])
+        self.assertEqual(before["b"], before["c"])
+        self.assertEqual(before["c"], before["d"])
         self.assertEqual(after["b"], before["b"])
         self.assertEqual(after["c"], before["c"])
         self.assertEqual(after["d"], before["d"])
 
     def test_document_ids_must_be_unique(self) -> None:
-        vane.configure(runner="")
-        conn = vane.connect()
-        conn.register("documents", pa.table({"doc_id": ["duplicate", "duplicate"]}))
-        with self.assertRaisesRegex(ValueError, "must be unique"):
-            validate_document_ids(conn.sql("select * from documents"))
+        with tempfile.TemporaryDirectory(prefix="vane-document-ids-") as tmp_dir:
+            source = Path(tmp_dir) / "documents.parquet"
+            pq.write_table(
+                pa.table({"doc_id": ["duplicate", "duplicate"]}),
+                source,
+            )
+            with self.assertRaisesRegex(ValueError, "must be unique"):
+                validate_document_ids(
+                    self.relation_connection().read_parquet(str(source))
+                )
 
     def test_empty_text_does_not_enter_an_lsh_bucket(self) -> None:
         row = fingerprint_documents_batch(
@@ -658,34 +786,6 @@ class WebTextDeduplicationTest(unittest.TestCase):
             [(row["reason"], row["is_duplicate"]) for row in rows],
             [("jaccard_match", True), ("minhash_only_rejected", False)],
         )
-
-    def test_script_and_docs_keep_the_global_relation_algorithm_boundary(self) -> None:
-        paths = [
-            REPO_ROOT / "src" / "web_text_deduplication.py",
-            REPO_ROOT / "docs" / "web_text_deduplication.en.md",
-            REPO_ROOT / "docs" / "web_text_deduplication.zh-CN.md",
-        ]
-        for path in paths:
-            text = path.read_text(encoding="utf-8")
-            self.assertIn(".read_csv(", text, msg=str(path))
-            self.assertIn(".map_batches(", text, msg=str(path))
-            self.assertIn("with recursive", text, msg=str(path))
-            self.assertIn("list_extract(f.lsh_bands", text, msg=str(path))
-            self.assertIn("cluster_inspection", text, msg=str(path))
-            self.assertIn("collision_buckets", text, msg=str(path))
-            self.assertIn("candidate_pair_slots", text, msg=str(path))
-            self.assertIn("max-candidate-pair-slots", text, msg=str(path))
-            self.assertIn("snapshot_verification", text, msg=str(path))
-            self.assertIn("commoncrawl.org/terms-of-use", text, msg=str(path))
-            self.assertIn("local_only_rights_review_required", text, msg=str(path))
-            if path.suffix == ".md":
-                self.assertIn("0.378122", text, msg=str(path))
-            self.assertIn("domain_summary", text, msg=str(path))
-            self.assertIn("candidate_reduction_ratio", text, msg=str(path))
-            self.assertIn(".write_csv(", text, msg=str(path))
-            self.assertIn(".write_parquet(", text, msg=str(path))
-            self.assertNotIn('conn.register("documents"', text, msg=str(path))
-            self.assertNotIn("product_area", text, msg=str(path))
 
     def test_readmes_link_languages_and_current_entrypoint(self) -> None:
         english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")

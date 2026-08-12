@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
 import pyarrow as pa
@@ -32,11 +33,13 @@ else:
 
 from _common import (
     PUBLIC_BACKEND_CHOICES,
+    RunnerWorkspace,
     backend_metadata_entry,
     batch_udf_options,
     merge_backend_metadata,
     positive_int,
-    require_local_relation_runner,
+    read_csv_as_strings,
+    require_ray_runner,
     table_from_rows,
     write_json,
 )
@@ -391,6 +394,7 @@ def validate_source_integrity(conn: Any) -> None:
 
 def materialize_sources(
     conn: Any,
+    workspace: RunnerWorkspace,
     input_dir: Path,
     asset_catalog: Path,
 ) -> tuple[Any, Any, Any, Any, list[str]]:
@@ -398,14 +402,23 @@ def materialize_sources(
     if not asset_catalog.is_file():
         raise FileNotFoundError(f"public asset catalog does not exist: {asset_catalog}")
 
-    cases = conn.read_csv(str(paths["cases"]), header=True).project(
+    cases = workspace.stage_table(
+        "input-cases",
+        read_csv_as_strings(paths["cases"]),
+    ).project(
         "case_id, account_id, business_question, "
         "try_cast(review_due_at as date) as review_due_at"
     )
-    requirements = conn.read_csv(str(paths["requirements"]), header=True).project(
+    requirements = workspace.stage_table(
+        "input-requirements",
+        read_csv_as_strings(paths["requirements"]),
+    ).project(
         "case_id, evidence_type"
     )
-    links = conn.read_csv(str(paths["evidence_links"]), header=True).project(
+    links = workspace.stage_table(
+        "input-evidence-links",
+        read_csv_as_strings(paths["evidence_links"]),
+    ).project(
         """
         record_id,
         case_id,
@@ -418,7 +431,10 @@ def materialize_sources(
         """
     )
     assets = project_raw_assets(
-        conn.read_csv(str(asset_catalog), header=True)
+        workspace.stage_table(
+            "input-assets",
+            read_csv_as_strings(asset_catalog),
+        )
     ).project(
         """
         record_id,
@@ -436,35 +452,47 @@ def materialize_sources(
         """
     )
 
-    conn.sql("drop table if exists business_cases")
-    cases.order("case_id").to_table("business_cases")
-    conn.sql("drop table if exists case_requirements")
-    requirements.order("case_id, evidence_type").to_table("case_requirements")
-    conn.sql("drop table if exists evidence_links")
-    links.order("case_id, record_id").to_table("evidence_links")
-    conn.sql("drop table if exists public_assets")
-    assets.order("asset_id").to_table("public_assets")
+    cases = workspace.materialize_view(
+        "business_cases",
+        cases.order("case_id"),
+    )
+    requirements = workspace.materialize_view(
+        "case_requirements",
+        requirements.order("case_id, evidence_type"),
+    )
+    links = workspace.materialize_view(
+        "evidence_links",
+        links.order("case_id, record_id"),
+    )
+    workspace.materialize_view(
+        "public_assets",
+        assets.order("asset_id"),
+    )
 
     validate_source_integrity(conn)
-    public_assets = conn.sql(
-        """
-        select a.*
-        from public_assets a
-        join (select distinct asset_id from evidence_links) e using (asset_id)
-        order by a.asset_id
-        """
+    public_assets = workspace.materialize(
+        "selected-public-assets",
+        conn.sql(
+            """
+            select a.*
+            from public_assets a
+            join (select distinct asset_id from evidence_links) e using (asset_id)
+            order by a.asset_id
+            """
+        ),
     )
     modalities = validate_modalities(public_assets)
     return (
-        conn.sql("select * from business_cases"),
-        conn.sql("select * from case_requirements"),
+        cases,
+        requirements,
         public_assets,
-        conn.sql("select * from evidence_links"),
+        links,
         modalities,
     )
 
 
 def build_asset_feature_relations(
+    workspace: RunnerWorkspace,
     public_assets: Any,
     modalities: list[str],
     args: argparse.Namespace,
@@ -476,27 +504,30 @@ def build_asset_feature_relations(
         "text": "process_text_asset_batch",
     }
     udf_options = batch_udf_options(args.execution_backend)
-    relations: list[Any] = []
+    branch_paths: list[Path] = []
     backend_metadata: dict[str, dict[str, Any]] = {}
     for modality in SUPPORTED_MODALITIES:
         if modality not in modalities:
             continue
         source = public_assets.filter(f"modality = '{modality}'").order("record_id")
-        relations.append(
-            source.map_batches(
-                importable_batch_function(stage_functions[modality]),
-                schema=ASSET_FEATURE_SCHEMA,
-                batch_size=args.batch_size,
-                **udf_options,
+        branch_paths.append(
+            workspace.write_relation(
+                f"process-{modality}-asset",
+                source.map_batches(
+                    importable_batch_function(stage_functions[modality]),
+                    schema=ASSET_FEATURE_SCHEMA,
+                    batch_size=args.batch_size,
+                    **udf_options,
+                ),
             )
         )
         backend_metadata[f"process_{modality}_asset"] = backend_metadata_entry(
             args.execution_backend
         )
 
-    features = relations[0]
-    for relation in relations[1:]:
-        features = features.union(relation)
+    features = workspace.connection.read_parquet(
+        [str(path) for path in branch_paths]
+    )
     return features, backend_metadata
 
 
@@ -543,7 +574,10 @@ def build_evidence_features(conn: Any) -> Any:
     )
 
 
-def build_case_relations(conn: Any) -> tuple[Any, Any, Any, Any]:
+def build_case_relations(
+    conn: Any,
+    workspace: RunnerWorkspace,
+) -> tuple[Any, Any, Any, Any]:
     evidence_gaps_rel = conn.sql(
         """
         select
@@ -560,8 +594,7 @@ def build_case_relations(conn: Any) -> tuple[Any, Any, Any, Any]:
         order by r.case_id, r.evidence_type
         """
     )
-    conn.sql("drop table if exists evidence_gaps")
-    evidence_gaps_rel.to_table("evidence_gaps")
+    evidence_gaps = workspace.materialize_view("evidence_gaps", evidence_gaps_rel)
 
     evidence_conflicts_rel = conn.sql(
         """
@@ -578,52 +611,102 @@ def build_case_relations(conn: Any) -> tuple[Any, Any, Any, Any]:
         order by case_id, claim_key
         """
     )
-    conn.sql("drop table if exists evidence_conflicts")
-    evidence_conflicts_rel.to_table("evidence_conflicts")
+    evidence_conflicts = workspace.materialize_view(
+        "evidence_conflicts",
+        evidence_conflicts_rel,
+    )
+
+    workspace.materialize_view(
+        "evidence_rollup",
+        conn.sql(
+            f"""
+            select
+              e.case_id,
+              count(*) as evidence_count,
+              count(distinct e.source_system) as source_count,
+              count(distinct e.modality) as modality_count,
+              cast(
+                sum(case when e.asset_decision = 'rejected' then 1 else 0 end)
+                as bigint
+              ) as rejected_asset_count,
+              cast(sum(e.risk_count) as bigint) as risk_count,
+              cast(sum(e.blocking_risk_count) as bigint) as blocking_risk_count,
+              cast(sum(
+                case
+                  when date_diff('day', e.observed_at, c.review_due_at) > {FRESHNESS_DAYS}
+                    then 1
+                  else 0
+                end
+              ) as bigint) as stale_evidence_count,
+              string_split(
+                string_agg(
+                  e.record_id,
+                  chr(31) order by e.observed_at desc, e.record_id
+                ),
+                chr(31)
+              ) as evidence_ids,
+              string_split(
+                string_agg(
+                  e.asset_id,
+                  chr(31) order by e.observed_at desc, e.record_id
+                ),
+                chr(31)
+              ) as asset_ids,
+              string_split(
+                string_agg(
+                  distinct e.source_system,
+                  chr(31) order by e.source_system
+                ),
+                chr(31)
+              ) as source_systems,
+              string_split(
+                string_agg(
+                  distinct e.modality,
+                  chr(31) order by e.modality
+                ),
+                chr(31)
+              ) as modalities,
+              string_split(
+                string_agg(
+                  distinct e.license_id,
+                  chr(31) order by e.license_id
+                ),
+                chr(31)
+              ) as license_ids,
+              string_agg(
+                '[' || e.modality || '/' || e.source_system || '] '
+                  || e.evidence_title || ': ' || e.evidence_text,
+                '\n' order by e.observed_at desc, e.record_id
+              ) as context_text
+            from evidence_features e
+            join business_cases c using (case_id)
+            group by e.case_id
+            """
+        ),
+    )
+    workspace.materialize_view(
+        "gap_counts",
+        conn.sql(
+            """
+            select case_id, count(*) as missing_evidence_count
+            from evidence_gaps
+            group by case_id
+            """
+        ),
+    )
+    workspace.materialize_view(
+        "conflict_counts",
+        conn.sql(
+            """
+            select case_id, count(*) as conflict_count
+            from evidence_conflicts
+            group by case_id
+            """
+        ),
+    )
 
     agent_context_rel = conn.sql(
-        f"""
-        with evidence_rollup as (
-          select
-            e.case_id,
-            count(*) as evidence_count,
-            count(distinct e.source_system) as source_count,
-            count(distinct e.modality) as modality_count,
-            sum(case when e.asset_decision = 'rejected' then 1 else 0 end)
-              as rejected_asset_count,
-            sum(e.risk_count) as risk_count,
-            sum(e.blocking_risk_count) as blocking_risk_count,
-            sum(
-              case
-                when date_diff('day', e.observed_at, c.review_due_at) > {FRESHNESS_DAYS}
-                  then 1
-                else 0
-              end
-            ) as stale_evidence_count,
-            list(e.record_id order by e.observed_at desc, e.record_id) as evidence_ids,
-            list(e.asset_id order by e.observed_at desc, e.record_id) as asset_ids,
-            list(distinct e.source_system order by e.source_system) as source_systems,
-            list(distinct e.modality order by e.modality) as modalities,
-            list(distinct e.license_id order by e.license_id) as license_ids,
-            string_agg(
-              '[' || e.modality || '/' || e.source_system || '] '
-                || e.evidence_title || ': ' || e.evidence_text,
-              '\n' order by e.observed_at desc, e.record_id
-            ) as context_text
-          from evidence_features e
-          join business_cases c using (case_id)
-          group by e.case_id
-        ),
-        gap_counts as (
-          select case_id, count(*) as missing_evidence_count
-          from evidence_gaps
-          group by case_id
-        ),
-        conflict_counts as (
-          select case_id, count(*) as conflict_count
-          from evidence_conflicts
-          group by case_id
-        )
+        """
         select
           'ctx-' || c.case_id as context_id,
           c.case_id,
@@ -659,19 +742,18 @@ def build_case_relations(conn: Any) -> tuple[Any, Any, Any, Any]:
         order by c.case_id
         """
     )
-    conn.sql("drop table if exists agent_context")
-    agent_context_rel.to_table("agent_context")
-    agent_context = conn.sql("select * from agent_context")
+    agent_context = workspace.materialize_view("agent_context", agent_context_rel)
 
     review_queue = agent_context.filter("review_state <> 'ready'").order(
         REVIEW_QUEUE_ORDER
     )
     status_summary = agent_context.aggregate(
-        "review_state, count(*) as cases, sum(evidence_count) as evidence_records"
+        "review_state, count(*) as cases, "
+        "cast(sum(evidence_count) as bigint) as evidence_records"
     ).order("review_state")
     return (
-        conn.sql("select * from evidence_gaps"),
-        conn.sql("select * from evidence_conflicts"),
+        evidence_gaps,
+        evidence_conflicts,
         review_queue,
         status_summary,
     )
@@ -679,6 +761,7 @@ def build_case_relations(conn: Any) -> tuple[Any, Any, Any, Any]:
 
 def write_artifacts(
     *,
+    workspace: RunnerWorkspace,
     output_dir: Path,
     cases: Any,
     requirements: Any,
@@ -714,13 +797,34 @@ def write_artifacts(
         "review_rows": relation_row_count(review_queue),
     }
 
-    asset_features.write_parquet(str(output_dir / "asset_features.parquet"))
-    agent_context.write_parquet(str(output_dir / "agent_context.parquet"))
-    evidence_features.write_parquet(str(output_dir / "evidence_features.parquet"))
-    evidence_gaps.write_csv(str(output_dir / "evidence_gaps.csv"))
-    evidence_conflicts.write_csv(str(output_dir / "evidence_conflicts.csv"))
-    review_queue.write_csv(str(output_dir / "review_queue.csv"))
-    status_summary.write_csv(str(output_dir / "status_summary.csv"))
+    workspace.write_parquet(
+        asset_features,
+        output_dir / "asset_features.parquet",
+    )
+    workspace.write_parquet(
+        agent_context,
+        output_dir / "agent_context.parquet",
+    )
+    workspace.write_parquet(
+        evidence_features,
+        output_dir / "evidence_features.parquet",
+    )
+    workspace.write_csv(
+        evidence_gaps,
+        output_dir / "evidence_gaps.csv",
+    )
+    workspace.write_csv(
+        evidence_conflicts,
+        output_dir / "evidence_conflicts.csv",
+    )
+    workspace.write_csv(
+        review_queue,
+        output_dir / "review_queue.csv",
+    )
+    workspace.write_csv(
+        status_summary,
+        output_dir / "status_summary.csv",
+    )
     write_json(
         output_dir / "manifest.json",
         {
@@ -788,7 +892,8 @@ def write_artifacts(
 
 
 def run(args: argparse.Namespace) -> None:
-    runner = require_local_relation_runner(vane.current_config().runner)
+    runner = vane.current_config().runner
+    require_ray_runner(runner)
     input_dir = Path(args.input_dir)
     asset_catalog = Path(args.asset_catalog)
     if input_dir.resolve() == DEFAULT_INPUT_DIR.resolve():
@@ -796,49 +901,57 @@ def run(args: argparse.Namespace) -> None:
     if asset_catalog.resolve() == DEFAULT_ASSET_CATALOG.resolve():
         verify_public_asset_snapshot(asset_catalog, ASSET_SNAPSHOT_METADATA)
 
-    conn = vane.connect()
-    cases, requirements, public_assets, evidence_links, modalities = materialize_sources(
-        conn,
-        input_dir,
-        asset_catalog,
-    )
+    with TemporaryDirectory(prefix="vane-enterprise-ray-") as workspace_root:
+        conn = vane.connect()
+        workspace = RunnerWorkspace(Path(workspace_root), conn)
+        cases, requirements, public_assets, evidence_links, modalities = (
+            materialize_sources(
+                conn,
+                workspace,
+                input_dir,
+                asset_catalog,
+            )
+        )
 
-    asset_features_rel, backend_metadata = build_asset_feature_relations(
-        public_assets,
-        modalities,
-        args,
-    )
-    conn.sql("drop table if exists asset_features")
-    asset_features_rel.order("asset_id").to_table("asset_features")
-    asset_features = conn.sql("select * from asset_features")
+        asset_features_rel, backend_metadata = build_asset_feature_relations(
+            workspace,
+            public_assets,
+            modalities,
+            args,
+        )
+        asset_features = workspace.materialize_view(
+            "asset_features",
+            asset_features_rel.order("asset_id"),
+        )
 
-    evidence_features_rel = build_evidence_features(conn)
-    conn.sql("drop table if exists evidence_features")
-    evidence_features_rel.order("case_id, record_id").to_table("evidence_features")
-    evidence_features = conn.sql("select * from evidence_features")
+        evidence_features = workspace.materialize_view(
+            "evidence_features",
+            build_evidence_features(conn).order("case_id, record_id"),
+        )
 
-    evidence_gaps, evidence_conflicts, review_queue, status_summary = (
-        build_case_relations(conn)
-    )
-    agent_context = conn.sql("select * from agent_context")
-    counts = write_artifacts(
-        output_dir=Path(args.output_dir),
-        cases=cases,
-        requirements=requirements,
-        public_assets=public_assets,
-        evidence_links=evidence_links,
-        asset_features=asset_features,
-        evidence_features=evidence_features,
-        agent_context=agent_context,
-        evidence_gaps=evidence_gaps,
-        evidence_conflicts=evidence_conflicts,
-        review_queue=review_queue,
-        status_summary=status_summary,
-        backend_metadata=backend_metadata,
-        modalities=modalities,
-        runner=runner,
-        args=args,
-    )
+        evidence_gaps, evidence_conflicts, review_queue, status_summary = (
+            build_case_relations(conn, workspace)
+        )
+        agent_context = conn.sql("select * from agent_context")
+        counts = write_artifacts(
+            workspace=workspace,
+            output_dir=Path(args.output_dir),
+            cases=cases,
+            requirements=requirements,
+            public_assets=public_assets,
+            evidence_links=evidence_links,
+            asset_features=asset_features,
+            evidence_features=evidence_features,
+            agent_context=agent_context,
+            evidence_gaps=evidence_gaps,
+            evidence_conflicts=evidence_conflicts,
+            review_queue=review_queue,
+            status_summary=status_summary,
+            backend_metadata=backend_metadata,
+            modalities=modalities,
+            runner=runner,
+            args=args,
+        )
 
     print(f"Business cases: {counts['case_rows']}")
     print(f"Public assets: {counts['asset_rows']}")
@@ -860,21 +973,27 @@ def parse_args() -> argparse.Namespace:
         "--execution-backend",
         choices=PUBLIC_BACKEND_CHOICES,
         default="auto",
-        help="Let Vane infer the backend, or pin a task backend explicitly.",
+        help="Use RayRunner's ray_task default, or pin a task backend explicitly.",
     )
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     args = parser.parse_args()
     try:
-        require_local_relation_runner(vane.current_config().runner)
         validate_input_paths(Path(args.input_dir))
         if not Path(args.asset_catalog).is_file():
             raise FileNotFoundError(
                 f"public asset catalog does not exist: {args.asset_catalog}"
             )
-    except (RuntimeError, FileNotFoundError) as exc:
+    except FileNotFoundError as exc:
         parser.error(str(exc))
     return args
 
 
+def main() -> None:
+    try:
+        run(parse_args())
+    finally:
+        vane.teardown_runner()
+
+
 if __name__ == "__main__":
-    run(parse_args())
+    main()

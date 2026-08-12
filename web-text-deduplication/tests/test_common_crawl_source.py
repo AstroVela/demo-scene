@@ -4,14 +4,18 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 from warcio.statusandheaders import StatusAndHeaders
 from warcio.warcwriter import WARCWriter
 
+from src._common import RunnerWorkspace
 from src._common_crawl import (
     CommonCrawlRangeTask,
     ExtractHtmlBlocksBatch,
@@ -24,6 +28,8 @@ from scripts.prepare_web_text_deduplication_data import (
     DEFAULT_METADATA_OUTPUT,
     DEFAULT_OUTPUT,
     DEFAULT_RECORD_MANIFEST,
+    file_sha256,
+    run as run_preparation,
 )
 
 
@@ -187,14 +193,46 @@ class CommonCrawlSourceTest(unittest.TestCase):
         self.assertEqual(DEFAULT_OUTPUT, workspace / "common_crawl_blocks.parquet")
         self.assertEqual(DEFAULT_METADATA_OUTPUT, workspace / "common_crawl_snapshot.json")
 
+    def test_snapshot_writer_replaces_a_dataset_with_one_parquet_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-web-snapshot-write-") as tmp_dir:
+            root = Path(tmp_dir)
+            output = root / "snapshot.parquet"
+            output.mkdir()
+            pq.write_table(
+                pa.table({"doc_id": ["stale"]}),
+                output / "part-0.parquet",
+            )
+            workspace = RunnerWorkspace(root / "workspace", None)
+
+            workspace.write_parquet_table(
+                pa.table({"doc_id": ["fresh-1", "fresh-2"]}),
+                output,
+            )
+
+            self.assertTrue(output.is_file())
+            self.assertEqual(
+                pq.read_table(output).column("doc_id").to_pylist(),
+                ["fresh-1", "fresh-2"],
+            )
+            self.assertEqual(len(file_sha256(output)), 64)
+
     def test_preparation_requires_explicit_terms_acknowledgement(self) -> None:
+        env = os.environ.copy()
+        env.pop("VANE_RUNNER", None)
+        env.update(
+            {
+                "RAY_ADDRESS": "local",
+                "VANE_PROGRESS": "0",
+                "RAY_LOG_TO_DRIVER": "0",
+            }
+        )
         completed = subprocess.run(
             [
                 sys.executable,
                 str(REPO_ROOT / "scripts" / "prepare_web_text_deduplication_data.py"),
             ],
             cwd=REPO_ROOT,
-            env={**os.environ, "VANE_RUNNER": "local-fast"},
+            env=env,
             text=True,
             capture_output=True,
             timeout=30,
@@ -207,6 +245,14 @@ class CommonCrawlSourceTest(unittest.TestCase):
             "https://commoncrawl.org/terms-of-use and the source-site rights",
             completed.stderr,
         )
+
+    def test_preparation_rejects_local_runner_before_reading_inputs(self) -> None:
+        with patch(
+            "scripts.prepare_web_text_deduplication_data.vane.current_config",
+            return_value=SimpleNamespace(runner="local"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires Vane RayRunner"):
+                run_preparation(SimpleNamespace())
 
 
 if __name__ == "__main__":

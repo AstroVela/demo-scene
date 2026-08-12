@@ -1,4 +1,4 @@
-vane-ai==0.1.0a1
+vane-ai==0.1.0
 pyarrow==24.0.0
 selectolax==0.4.10
 warcio==1.8.1

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import os
 from pathlib import Path
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
+import vane
 
 from claims_disposition_sql_pipeline import pipeline
 from claims_disposition_sql_pipeline.config import load_runtime_config
@@ -17,6 +20,55 @@ from claims_disposition_sql_pipeline.vane_udfs import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_pipeline_sets_openai_key_before_runner_initialization(monkeypatch):
+    config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
+    worker_environment = {}
+
+    class WorkerPrewarmed(RuntimeError):
+        pass
+
+    configured_runners = []
+
+    def initialize_runner():
+        worker_environment["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+        raise WorkerPrewarmed
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        pipeline.vane,
+        "configure",
+        lambda *, runner: configured_runners.append(runner),
+    )
+    monkeypatch.setattr(pipeline, "probe_runtime", lambda _config: None)
+    monkeypatch.setattr(pipeline.vane, "get_or_create_runner", initialize_runner)
+
+    with pytest.raises(WorkerPrewarmed):
+        pipeline.run_pipeline(config)
+
+    assert configured_runners == [config.runner]
+    assert worker_environment == {"OPENAI_API_KEY": config.ai.api_key}
+
+
+def test_driver_catalog_rows_use_execute_instead_of_runner_relations():
+    expected = pa.table({"claim_id": ["CLM-001"], "status": ["ready"]})
+
+    class DriverConnection:
+        def execute(self, query):
+            assert query == "select * from driver_only_claims"
+            return self
+
+        def to_arrow_table(self):
+            return expected
+
+        def sql(self, _query):
+            raise AssertionError("Driver catalog read used the Runner Relation API")
+
+    assert pipeline._relation_rows(
+        DriverConnection(),
+        "driver_only_claims",
+    ) == expected.to_pylist()
 
 
 def test_claim_material_ocr_is_a_direct_runner_sql_projection():
@@ -31,11 +83,10 @@ def test_claim_material_ocr_is_a_direct_runner_sql_projection():
     assert "document_ocr_json(" not in material_statement
 
 
-def test_claim_material_sql_calls_ocr_once_per_document():
+def test_claim_material_sql_materializes_one_ocr_result_per_document():
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
     fixture = build_fixture(config.minio.bucket)
-    ocr_calls = []
-    connection = duckdb.connect()
+    connection = vane.connect()
     try:
         pipeline.register_or_replace_table(
             connection,
@@ -54,20 +105,21 @@ def test_claim_material_sql_calls_ocr_once_per_document():
                 ]
             ),
         )
-        connection.create_function(
-            "minio_object_exists",
+        vane.attach_function(
             lambda _bucket, _object_key: True,
-            ["VARCHAR", "VARCHAR"],
-            "BOOLEAN",
+            alias="minio_object_exists",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="BOOLEAN",
         )
-        connection.create_function(
-            "minio_object_sha256",
+        vane.attach_function(
             lambda _bucket, _object_key: "0" * 64,
-            ["VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="minio_object_sha256",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
-        connection.create_function(
-            "photo_quality_json",
+        vane.attach_function(
             lambda _bucket, _object_key: stable_json(
                 {
                     "status": "success",
@@ -75,12 +127,13 @@ def test_claim_material_sql_calls_ocr_once_per_document():
                     "quality_score": 0.95,
                 }
             ),
-            ["VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="photo_quality_json",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
 
-        def document_ocr(_bucket, object_key):
-            ocr_calls.append(object_key)
+        def document_ocr(_bucket, _object_key):
             return stable_json(
                 {
                     "status": "success",
@@ -89,25 +142,28 @@ def test_claim_material_sql_calls_ocr_once_per_document():
                 }
             )
 
-        connection.create_function(
-            "document_ocr_json",
+        vane.attach_function(
             document_ocr,
-            ["VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="document_ocr_json",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
-        connection.create_function(
-            "document_fields_json",
+        vane.attach_function(
             lambda _ocr: stable_json({"claim_number": "fixture"}),
-            ["VARCHAR"],
-            "VARCHAR",
+            alias="document_fields_json",
+            connection=connection,
+            parameters=["VARCHAR"],
+            return_dtype="VARCHAR",
         )
-        connection.create_function(
-            "document_quality_json",
+        vane.attach_function(
             lambda _ocr, _fields, _claim_id, _required, _confidence: stable_json(
                 {"document_usable": True}
             ),
-            ["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "DOUBLE"],
-            "VARCHAR",
+            alias="document_quality_json",
+            connection=connection,
+            parameters=["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR", "DOUBLE"],
+            return_dtype="VARCHAR",
         )
 
         for sql_path in pipeline.SQL_STAGES:
@@ -129,8 +185,14 @@ def test_claim_material_sql_calls_ocr_once_per_document():
         connection.close()
 
     assert len(rows) == 4
-    assert len(ocr_calls) == 4
-    assert all("/documents/" in object_key for object_key in ocr_calls)
+    assert all(
+        json.loads(document_ocr_json) == {
+            "mean_confidence": 0.95,
+            "status": "success",
+            "text_lines": [],
+        }
+        for _claim_id, document_ocr_json in rows
+    )
 
 
 def test_claim_damage_sql_owns_validation_classification_and_aggregation():
@@ -172,8 +234,8 @@ def test_claim_damage_runner_validation_feeds_pure_sql_rules(tmp_path):
             "confidence": 0.95,
         }
     )
-    connection = duckdb.connect()
-    runner_connection = duckdb.connect()
+    connection = vane.connect()
+    runner_connection = vane.connect()
     try:
         pipeline.register_or_replace_table(
             connection,
@@ -203,11 +265,12 @@ def test_claim_damage_runner_validation_feeds_pure_sql_rules(tmp_path):
                 ]
             ),
         )
-        runner_connection.create_function(
-            "photo_damage_result_json",
+        vane.attach_function(
             photo_damage_result_json.python_function,
-            ["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR"],
-            "VARCHAR",
+            alias="photo_damage_result_json",
+            connection=runner_connection,
+            parameters=["VARCHAR", "VARCHAR", "VARCHAR", "VARCHAR"],
+            return_dtype="VARCHAR",
         )
         pipeline._execute_sql_file(connection, pipeline.DAMAGE_VALIDATION_INPUT_STAGE)
         pipeline._execute_runner_sql_file(

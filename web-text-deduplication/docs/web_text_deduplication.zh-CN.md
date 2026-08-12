@@ -22,10 +22,19 @@
 doc_id, source, domain, crawled_at, title, body
 ~~~
 
-Vane 通过 Relation 读取：
+Vane 0.1.0 的 RayRunner 无法序列化 CSV scan，因此 CSV 会先由 Arrow 按字符串读取并暂存为 Parquet，再公开为 Relation：
 
 ~~~python
-documents = conn.read_csv(str(DEFAULT_INPUT), header=True).project(
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from src._common import RunnerWorkspace, read_csv_as_strings
+
+workspace_dir = TemporaryDirectory(prefix="vane-web-dedup-ray-")
+workspace = RunnerWorkspace(Path(workspace_dir.name), conn)
+documents = workspace.stage_table(
+    "input-documents", read_csv_as_strings(DEFAULT_INPUT)
+).project(
     "doc_id, source, domain, cast(crawled_at as date) as crawled_at, "
     "coalesce(title, '') as title, coalesce(body, '') as body"
 )
@@ -52,7 +61,7 @@ fingerprinted_rel = documents.map_batches(
 
 ## 第二步：展开 band 并限制候选增长
 
-固定的 8 个 band 通过 SQL `UNION ALL` 和 `list_extract(f.lsh_bands, ...)` 展开：
+固定的 8 个 band 通过 8 条使用 `list_extract(f.lsh_bands, ...)` 的 SQL 投影展开。RayRunner 分别物化每条投影，再通过多文件 Parquet 扫描合并：
 
 ~~~python
 band_queries = [
@@ -68,9 +77,15 @@ band_queries = [
     """
     for band_index in range(8)
 ]
+
+band_paths = [
+    workspace.write_relation(f"band-{index}", relation)
+    for index, relation in enumerate(band_membership_relations(conn))
+]
+band_memberships = conn.read_parquet([str(path) for path in band_paths])
 ~~~
 
-流水线会检查每条非空指纹是否正好生成 8 行 band 归属记录。`collision_buckets.csv` 列出每个碰撞桶的成员数、域名和潜在文档对数量。
+流水线会检查每条非空指纹是否正好生成 8 行 band 归属记录。`collision_buckets.csv` 列出每个碰撞桶的成员数、域名和潜在文档对数量。Ray/SQL 会先过滤单例桶，只有碰撞桶的成员记录会被收集到 Driver 端做确定性分组，再写回 Parquet；其余数据处理仍由 RayRunner 执行。
 
 自连接之前，脚本先汇总所有碰撞桶的 `member_count * (member_count - 1) / 2`。如果 `candidate_pair_slots` 超过 `--max-candidate-pair-slots`，任务会在创建候选 Relation 前失败。默认预算为 1,000,000。
 
@@ -119,27 +134,14 @@ LSH 只负责召回候选，Jaccard 负责最终接受；每条候选都会保�
 
 ## 第五步：生成稳定簇
 
-重复边组成无向图，递归 CTE 计算连通分量：
+重复边组成无向图。流水线已经把排序后的全部文档 ID 拉到 driver，`--max-candidate-pair-slots` 也限制了边的展开规模。因此，`build_cluster_relation` 只读取一次已接受的边，通过确定性的 union-find 计算连通分量，再暂存为一个 Parquet Relation：
 
-~~~sql
-with recursive
-edges as (
-  select doc_id as src_doc_id, doc_id as dst_doc_id from documents
-  union
-  select left_doc_id, right_doc_id from duplicate_pairs
-  union
-  select right_doc_id, left_doc_id from duplicate_pairs
-),
-reach(src_doc_id, dst_doc_id) as (
-  select src_doc_id, dst_doc_id from edges
-  union
-  select r.src_doc_id, e.dst_doc_id
-  from reach r
-  join edges e on e.src_doc_id = r.dst_doc_id
-)
+~~~python
+clusters = build_cluster_relation(conn, workspace)
+clusters.create_view("clusters", replace=True)
 ~~~
 
-最小成员 `doc_id` 作为稳定簇根。代表选择独立进行：优先较新的日期，其次较多 token，最后按 `doc_id`。`cluster_inspection.csv` 列出每个多成员簇、代表、成员和最弱接受边。
+合并时始终把较大的根挂到较小的根，因此无论边的顺序如何，成员中最小的 `doc_id` 都是稳定簇根。路径压缩避免了反复物化全图，只有最终的成员表会重新进入 RayRunner。代表选择独立进行：优先较新的日期，其次较多 token，最后按 `doc_id`。`cluster_inspection.csv` 列出每个多成员簇、代表、成员和最弱接受边。
 
 ## 默认结果
 
@@ -163,15 +165,23 @@ Output directory: output/web_text_deduplication
 
 ## 输出产物
 
-Relation writer 直接写出审核与发布结果：
+Relation 输出由 RayRunner 执行。driver 侧生成的簇成员先暂存为 Parquet，再进入后续 SQL；其他 Parquet 产物使用 Relation writer，`workspace.write_csv` 会新建一条 Ray 投影，再通过 Arrow 写出审核用 CSV：
 
 ~~~python
-duplicate_pairs.write_csv(str(output_dir / "duplicate_pairs.csv"))
-cluster_inspection.write_csv(str(output_dir / "cluster_inspection.csv"))
-collision_buckets.write_csv(str(output_dir / "collision_buckets.csv"))
-domain_summary.write_csv(str(output_dir / "domain_summary.csv"))
-fingerprinted.write_parquet(str(output_dir / "fingerprinted.parquet"))
-representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
+workspace.write_csv(duplicate_pairs, output_dir / "duplicate_pairs.csv")
+workspace.write_csv(
+    cluster_inspection, output_dir / "cluster_inspection.csv"
+)
+workspace.write_csv(
+    collision_buckets, output_dir / "collision_buckets.csv"
+)
+workspace.write_csv(domain_summary, output_dir / "domain_summary.csv")
+workspace.write_parquet(
+    fingerprinted, output_dir / "fingerprinted.parquet"
+)
+workspace.write_parquet(
+    representatives, output_dir / "deduped_documents.parquet"
+)
 ~~~
 
 | 文件 | 内容 |
@@ -195,18 +205,23 @@ representatives.write_parquet(str(output_dir / "deduped_documents.parquet"))
 
 安装依赖并运行离线样例：
 
-依赖文件会从公共 PyPI 解析已验证的 Vane 正式发布包；直接安装 Vane 的等价命令是 `pip install vane-ai`。
+已验证环境从 PyPI 解析 Vane 0.1.0 及其依赖。
 
 ~~~bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install 'vane-ai==0.1.0'
+uv pip install -r requirements.txt
+uv pip check
+.venv/bin/python src/web_text_deduplication.py
 ~~~
+
+Vane 0.1.0 默认使用 RayRunner，因此 `--execution-backend auto` 会解析为 `ray_task`；也可以显式选择 `ray_task` 或 `subprocess_task`。
 
 聚焦测试：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python -m unittest -v \
+.venv/bin/python -m unittest -v \
   tests.test_web_text_deduplication \
   tests.test_common_crawl_source
 ~~~
@@ -226,7 +241,7 @@ VANE_RUNNER=local-fast .venv/bin/python -m unittest -v \
 仓库中的目标清单只使用 IANA 示例域名。先在本地生成 WARC 记录清单和抽取快照：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python scripts/prepare_web_text_deduplication_data.py \
+.venv/bin/python scripts/prepare_web_text_deduplication_data.py \
   --refresh-index \
   --acknowledge-common-crawl-terms
 ~~~
@@ -236,7 +251,7 @@ VANE_RUNNER=local-fast .venv/bin/python scripts/prepare_web_text_deduplication_d
 对本地快照运行去重：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
+.venv/bin/python src/web_text_deduplication.py \
   --input workspace/web_text_deduplication/common_crawl_blocks.parquet \
   --snapshot-metadata workspace/web_text_deduplication/common_crawl_snapshot.json \
   --output-dir output/web_text_deduplication_common_crawl
@@ -245,7 +260,7 @@ VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
 也可以用准备好的记录清单实时读取 WARC 字节范围：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
+.venv/bin/python src/web_text_deduplication.py \
   --source common-crawl \
   --record-manifest workspace/web_text_deduplication/common_crawl_records.csv \
   --acknowledge-common-crawl-terms \
@@ -259,7 +274,7 @@ WARC 路径检查 HTTP 206、字节长度和目标 URI，并交叉比对 WARC �
 任何包含六个基础字段的 CSV 或 Parquet 都可以接入：
 
 ~~~bash
-VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
+.venv/bin/python src/web_text_deduplication.py \
   --input path/to/documents.parquet \
   --output-dir output/custom_dedup
 ~~~
@@ -270,5 +285,5 @@ VANE_RUNNER=local-fast .venv/bin/python src/web_text_deduplication.py \
 
 - 离线样例用于固定运行行为，不代表真实网页分布。
 - LSH 是概率算法；精确阶段可以移除候选中的误判，但无法找回从未共享 band 的文档对。
-- 热桶和递归图闭包可能产生较高开销。候选槽位门禁限制了本示例的展开规模，但不代表分布式性能。
+- 热桶和 driver 侧图状态都可能占用较多资源。候选槽位门禁会限制候选展开规模，但该示例并不是分布式性能基准。
 - HTML 抽取器会消除父子文本重叠，但不检查页面安全、隐私、robots 策略或内容权利。

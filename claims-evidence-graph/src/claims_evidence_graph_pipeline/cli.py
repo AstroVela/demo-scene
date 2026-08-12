@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import argparse
 
+import vane
+
 from claims_evidence_graph_pipeline.contracts import (
     DEFAULT_DATA_ROOT,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_WORKSPACE_ROOT,
+    SUPPORTED_EXECUTION_BACKENDS,
+    SUPPORTED_RUNNERS,
     ContractError,
     RunConfig,
 )
@@ -35,10 +39,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
         "--execution-backend",
-        choices=["local", "ray_task", "ray_actor"],
-        default="local",
+        choices=SUPPORTED_EXECUTION_BACKENDS,
+        default="ray_task",
+        help="UDF execution backend; local is an alias for subprocess_task.",
     )
-    parser.add_argument("--runner", choices=["local", "ray"], default="local")
+    parser.add_argument(
+        "--runner",
+        choices=SUPPORTED_RUNNERS,
+        default="ray",
+        help="Vane Relation runner; Ray is the checked-in default.",
+    )
     parser.add_argument("--skip-parquet", action="store_true")
     parser.add_argument(
         "--photo-labels-path",
@@ -114,6 +124,8 @@ def main() -> None:
         run_pipeline(RunConfig.from_args(parse_args()))
     except ContractError as exc:
         raise SystemExit(str(exc)) from exc
+    finally:
+        vane.teardown_runner()
 
 
 if __name__ == "__main__":

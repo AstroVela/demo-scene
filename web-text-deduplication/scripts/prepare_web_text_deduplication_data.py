@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pyarrow as pa
 import vane
@@ -19,11 +20,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from src._common import (  # noqa: E402
     PUBLIC_BACKEND_CHOICES,
+    RunnerWorkspace,
     backend_metadata_entry,
     batch_udf_options,
     merge_backend_metadata,
     positive_int,
-    require_local_relation_runner,
+    require_ray_runner,
     write_json,
 )
 from src._common_crawl import (  # noqa: E402
@@ -74,7 +76,8 @@ def display_path(path: Path) -> str:
 
 
 def run(args: argparse.Namespace) -> None:
-    runner = require_local_relation_runner(vane.current_config().runner)
+    runner = vane.current_config().runner
+    require_ray_runner(runner)
     targets_path = Path(args.targets)
     record_manifest_path = Path(args.record_manifest)
     output_path = Path(args.output)
@@ -89,10 +92,37 @@ def run(args: argparse.Namespace) -> None:
     else:
         specs = load_record_manifest(record_manifest_path)
 
+    with TemporaryDirectory(prefix="vane-web-snapshot-ray-") as workspace_root:
+        _run_with_workspace(
+            args,
+            runner,
+            specs,
+            targets_path,
+            record_manifest_path,
+            output_path,
+            metadata_output_path,
+            Path(workspace_root),
+        )
+
+
+def _run_with_workspace(
+    args: argparse.Namespace,
+    runner: str,
+    specs: list[WarcRecordSpec],
+    targets_path: Path,
+    record_manifest_path: Path,
+    output_path: Path,
+    metadata_output_path: Path,
+    workspace_root: Path,
+) -> None:
     conn = vane.connect()
+    workspace = RunnerWorkspace(workspace_root, conn)
     if args.refresh_index:
         record_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        conn.from_arrow(specs_table(specs)).write_csv(str(record_manifest_path))
+        workspace.write_csv(
+            workspace.stage_table("record-specs", specs_table(specs)),
+            record_manifest_path,
+        )
 
     raw_records_rel = common_crawl_range_relation(
         conn,
@@ -100,11 +130,10 @@ def run(args: argparse.Namespace) -> None:
         timeout=args.timeout,
         max_html_bytes=args.max_html_bytes,
     )
-    conn.sql("drop table if exists raw_warc_records")
-    raw_records_rel.order("capture_timestamp, index_url").to_table(
-        "raw_warc_records"
+    raw_records = workspace.materialize_view(
+        "raw_warc_records",
+        raw_records_rel.order("capture_timestamp, index_url"),
     )
-    raw_records = conn.sql("select * from raw_warc_records")
 
     blocks_rel = raw_records.map_batches(
         ExtractHtmlBlocksBatch(
@@ -115,17 +144,18 @@ def run(args: argparse.Namespace) -> None:
         batch_size=args.batch_size,
         **batch_udf_options(args.execution_backend),
     )
-    conn.sql("drop table if exists common_crawl_blocks")
-    blocks_rel.order("target_url, capture_timestamp, block_index").to_table(
-        "common_crawl_blocks"
+    blocks = workspace.materialize_view(
+        "common_crawl_blocks",
+        blocks_rel.order("target_url, capture_timestamp, block_index"),
     )
-    blocks = conn.sql("select * from common_crawl_blocks")
     block_rows = relation_row_count(blocks)
     if block_rows == 0:
         raise RuntimeError("Common Crawl extraction produced zero text blocks")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    blocks.write_parquet(str(output_path))
+    workspace.write_parquet_table(
+        blocks.project("*").to_arrow_table(),
+        output_path,
+    )
 
     source_rows = relation_row_count(raw_records)
     source_rows_with_blocks = int(
@@ -191,8 +221,7 @@ def run(args: argparse.Namespace) -> None:
             "html_parser_version": importlib.metadata.version("selectolax"),
             "html_block_selector": HTML_BLOCK_SELECTOR,
             "generation_command": (
-                "VANE_RUNNER=local-fast .venv/bin/python "
-                "scripts/prepare_web_text_deduplication_data.py "
+                ".venv/bin/python scripts/prepare_web_text_deduplication_data.py "
                 "--refresh-index --acknowledge-common-crawl-terms"
             ),
             "runner": runner,
@@ -236,10 +265,10 @@ def parse_args() -> argparse.Namespace:
         "--execution-backend",
         choices=PUBLIC_BACKEND_CHOICES,
         default="auto",
+        help="Use RayRunner's ray_task default, or pin a task backend explicitly.",
     )
     args = parser.parse_args()
     try:
-        require_local_relation_runner(vane.current_config().runner)
         if not args.acknowledge_common_crawl_terms:
             raise ValueError(
                 "preparing Common Crawl data requires "
@@ -252,10 +281,17 @@ def parse_args() -> argparse.Namespace:
             raise FileNotFoundError(
                 f"record manifest does not exist: {args.record_manifest}"
             )
-    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
     return args
 
 
+def main() -> None:
+    try:
+        run(parse_args())
+    finally:
+        vane.teardown_runner()
+
+
 if __name__ == "__main__":
-    run(parse_args())
+    main()

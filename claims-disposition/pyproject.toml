@@ -19,7 +19,8 @@ dependencies = [
   "pyyaml>=6,<7",
   "pytz>=2026.2,<2027",
   "rapidocr>=3,<4",
-  "vane-ai==0.1.0a1",
+  "socksio==1.0.0",
+  "vane-ai[openai]==0.1.0",
 ]
 
 [project.optional-dependencies]

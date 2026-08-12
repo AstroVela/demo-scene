@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -11,8 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-import vane
 import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import vane
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +24,7 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 sys.path.insert(0, str(SRC_DIR))
 
 import claims_evidence_graph_pipeline.cli as cli_module
+import claims_evidence_graph_pipeline.quality_fixtures_cli as quality_cli_module
 from claims_evidence_graph_pipeline.contracts import (
     CLAIM_FILES,
     ContractError,
@@ -41,27 +45,40 @@ from claims_evidence_graph_pipeline.evaluation import (
     evaluate_photo_quality,
 )
 from claims_evidence_graph_pipeline.photo_vlm import (
+    PHOTO_DAMAGE_RETURN_FORMAT,
     PhotoDamageReport,
     check_image_model_service,
+    configure_image_model_credentials,
     run_photo_damage_vlm,
 )
 import claims_evidence_graph_pipeline.pipeline as pipeline_module
-from claims_evidence_graph_pipeline.pipeline import build_review_tasks, run_pipeline
+from claims_evidence_graph_pipeline.pipeline import (
+    build_review_tasks,
+    read_jsonl,
+    run_pipeline,
+)
 from claims_evidence_graph_pipeline.quality_fixtures import (
     build_quality_fixture_workspace,
 )
+from claims_evidence_graph_pipeline.runner_workspace import RunnerWorkspace
 from claims_evidence_graph_pipeline.udfs import (
     FUNSDDocumentExtractBatch,
     PhotoQualityBatch,
     map_batches_with_backend,
     quality_needs_review,
     quality_score,
+    vane_execution_backend,
 )
 from claims_evidence_graph_pipeline.validation import (
     validate_label_inputs,
     validate_manifests,
     validate_outputs,
 )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _use_local_vane_runner() -> None:
+    vane.configure(runner="local")
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -72,13 +89,25 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
+def _local_run_config(**overrides: Any) -> RunConfig:
+    return RunConfig(
+        runner="local",
+        execution_backend="local",
+        **overrides,
+    )
+
+
 def _make_image(path: Path, *, color: tuple[int, int, int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (640, 480), color)
     image.save(path)
 
 
-def _damage_response_json(*, confidence: float = 0.92) -> str:
+def _damage_response_json(
+    *,
+    confidence: float = 0.92,
+    evidence_description: str = "Visible scratch on the rear bumper.",
+) -> str:
     return json.dumps(
         {
             "vehicle_visible": True,
@@ -87,7 +116,7 @@ def _damage_response_json(*, confidence: float = 0.92) -> str:
             "damaged_parts": ["rear_bumper"],
             "damage_types": ["scratch"],
             "severity_hint": "minor",
-            "evidence_description": "Visible scratch on the rear bumper.",
+            "evidence_description": evidence_description,
             "uncertainty_reasons": [],
             "confidence": confidence,
         }
@@ -98,7 +127,7 @@ def _fake_prompt_response(input_rel: object, raw_response: str) -> object:
     escaped = raw_response.replace("'", "''")
     return input_rel.query(
         "prompt_input",
-        f"select '{escaped}' as raw_response from prompt_input",
+        f"select *, '{escaped}' as raw_response from prompt_input",
     )
 
 
@@ -280,7 +309,84 @@ def test_cli_defaults_to_baseline_profile(monkeypatch) -> None:
 
     assert args.mode == "offline"
     assert args.profile == "baseline"
-    assert args.runner == "local"
+    assert args.runner == "ray"
+    assert args.execution_backend == "ray_task"
+
+
+def test_cli_accepts_explicit_ray_relation_runner(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["claims_evidence_graph.py", "--runner", "ray"],
+    )
+
+    assert cli_module.parse_args().runner == "ray"
+
+
+@pytest.mark.parametrize(
+    "parse_args",
+    [cli_module.parse_args, quality_cli_module.parse_args],
+    ids=["pipeline", "quality-fixtures"],
+)
+def test_clis_accept_ray_task_backend(
+    monkeypatch,
+    parse_args,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["claims_evidence_graph.py", "--execution-backend", "ray_task"],
+    )
+
+    assert parse_args().execution_backend == "ray_task"
+
+
+@pytest.mark.parametrize(
+    "parse_args",
+    [cli_module.parse_args, quality_cli_module.parse_args],
+    ids=["pipeline", "quality-fixtures"],
+)
+def test_clis_reject_ray_actor_backend(monkeypatch, parse_args) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["claims_evidence_graph.py", "--execution-backend", "ray_actor"],
+    )
+
+    with pytest.raises(SystemExit):
+        parse_args()
+
+
+def test_pipeline_rejects_ray_task_with_local_runner_before_loading_inputs(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        pipeline_module,
+        "load_pipeline_inputs",
+        lambda _config: pytest.fail(
+            "inputs must not load for an incompatible runner/backend pair"
+        ),
+    )
+
+    with pytest.raises(
+        ContractError,
+        match="execution-backend must be local when --runner is local",
+    ):
+        run_pipeline(
+            RunConfig(
+                runner="local",
+                execution_backend="ray_task",
+            ),
+            print_summary=False,
+        )
+
+
+def test_udf_adapter_preserves_ray_task_backend() -> None:
+    assert vane_execution_backend("ray_task") == "ray_task"
+
+
+def test_udf_adapter_maps_local_to_subprocess_task() -> None:
+    assert vane_execution_backend("local") == "subprocess_task"
 
 
 def test_quality_score_flags_low_quality_image() -> None:
@@ -473,8 +579,8 @@ def test_photo_damage_vlm_uses_qwen_compatible_prompt(
     con = vane.connect()
     calls = []
 
-    def fake_prompt(input_rel, column, **kwargs):
-        calls.append((column, kwargs))
+    def fake_prompt(input_rel, messages, **kwargs):
+        calls.append((input_rel.select(*messages).columns, kwargs))
         return _fake_prompt_response(input_rel, _damage_response_json())
 
     monkeypatch.setattr(photo_vlm, "prompt", fake_prompt)
@@ -492,18 +598,18 @@ def test_photo_damage_vlm_uses_qwen_compatible_prompt(
     photo_table = PhotoQualityBatch()(photo_input_table)
 
     damage_table, run_table = run_photo_damage_vlm(
-        con,
+        RunnerWorkspace(tmp_path / "runner-workspace", con),
         photo_input_table,
         photo_table,
-        RunConfig(mode="ai"),
+        _local_run_config(mode="ai"),
     )
 
-    assert calls[0][0] == "instruction"
-    assert calls[0][1]["image_columns"] == ["file_bytes"]
+    assert calls[0][0] == ["instruction", "file_bytes"]
     assert calls[0][1]["model"] == "Qwen2.5-VL-3B-Instruct"
     assert calls[0][1]["base_url"] == "http://127.0.0.1:8001/v1"
-    assert calls[0][1]["api_key"] == "EMPTY"
-    assert calls[0][1]["return_format"] is PhotoDamageReport
+    assert calls[0][1]["use_chat_completions"] is True
+    assert calls[0][1]["max_output_tokens"] == 768
+    assert calls[0][1]["return_format"] is PHOTO_DAMAGE_RETURN_FORMAT
     assert damage_table.schema == PHOTO_DAMAGE_EVIDENCE.arrow_table([]).schema
     assert run_table.schema == PHOTO_MODEL_RUNS.arrow_table([]).schema
     damage = damage_table.to_pylist()[0]
@@ -512,6 +618,74 @@ def test_photo_damage_vlm_uses_qwen_compatible_prompt(
     assert json.loads(damage["damaged_parts_json"]) == ["rear_bumper"]
     assert damage["needs_review"] is False
     assert run_table.to_pylist()[0]["status"] == "success"
+
+
+def test_photo_damage_vlm_binds_reordered_results_by_input_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from claims_evidence_graph_pipeline import photo_vlm
+
+    photo_rows = []
+    for file_id, color in (
+        ("PHOTO-1", (120, 140, 160)),
+        ("PHOTO-2", (30, 60, 90)),
+    ):
+        photo_path = tmp_path / f"{file_id}.jpg"
+        _make_image(photo_path, color=color)
+        data = photo_path.read_bytes()
+        photo_rows.append(
+            {
+                "claim_id": "CLM-1",
+                "file_id": file_id,
+                "file_size_bytes": len(data),
+                "absolute_path": str(photo_path),
+                "file_bytes": data,
+            }
+        )
+
+    responses = {
+        file_id: _damage_response_json(evidence_description=f"belongs-to-{file_id}")
+        for file_id in ("PHOTO-1", "PHOTO-2")
+    }
+
+    def reversed_prompt_response(input_rel, messages, **kwargs):
+        first = responses["PHOTO-1"].replace("'", "''")
+        second = responses["PHOTO-2"].replace("'", "''")
+        return input_rel.query(
+            "prompt_input",
+            f"""
+            select
+              *,
+              case file_id
+                when 'PHOTO-1' then '{first}'
+                when 'PHOTO-2' then '{second}'
+              end as raw_response
+            from prompt_input
+            order by file_id desc
+            """,
+        )
+
+    monkeypatch.setattr(photo_vlm, "prompt", reversed_prompt_response)
+    photo_input_table = PHOTO_INPUT.arrow_table(photo_rows)
+    photo_table = PhotoQualityBatch()(photo_input_table)
+
+    damage_table, run_table = run_photo_damage_vlm(
+        RunnerWorkspace(tmp_path / "runner-workspace", vane.connect()),
+        photo_input_table,
+        photo_table,
+        _local_run_config(mode="ai"),
+    )
+
+    descriptions = {
+        row["file_id"]: row["evidence_description"]
+        for row in damage_table.to_pylist()
+    }
+    assert descriptions == {
+        "PHOTO-1": "belongs-to-PHOTO-1",
+        "PHOTO-2": "belongs-to-PHOTO-2",
+    }
+    assert {row["status"] for row in run_table.to_pylist()} == {"success"}
 
 
 def test_photo_damage_vlm_routes_row_count_mismatch_to_error_evidence(
@@ -527,8 +701,20 @@ def test_photo_damage_vlm_routes_row_count_mismatch_to_error_evidence(
 
     def short_prompt_response(input_rel, column, **kwargs):
         class ShortPromptResult:
-            def to_arrow_table(self) -> pa.Table:
-                return pa.table({"raw_response": pa.array([], type=pa.string())})
+            def select(self, *columns):
+                return self
+
+            def write_parquet(self, path: str) -> None:
+                pq.write_table(
+                    pa.table(
+                        {
+                            "file_id": pa.array([], type=pa.string()),
+                            "input_image_sha256": pa.array([], type=pa.string()),
+                            "raw_response": pa.array([], type=pa.string()),
+                        }
+                    ),
+                    path,
+                )
 
         return ShortPromptResult()
 
@@ -547,10 +733,10 @@ def test_photo_damage_vlm_routes_row_count_mismatch_to_error_evidence(
     photo_table = PhotoQualityBatch()(photo_input_table)
 
     damage_table, run_table = run_photo_damage_vlm(
-        con,
+        RunnerWorkspace(tmp_path / "runner-workspace", con),
         photo_input_table,
         photo_table,
-        RunConfig(profile="semantic"),
+        _local_run_config(profile="semantic"),
     )
 
     run = run_table.to_pylist()[0]
@@ -567,7 +753,7 @@ def test_photo_damage_vlm_routes_row_count_mismatch_to_error_evidence(
 def test_image_model_preflight_fails_when_endpoint_missing() -> None:
     try:
         check_image_model_service(
-            RunConfig(
+            _local_run_config(
                 mode="ai",
                 image_model_base_url="http://127.0.0.1:9/v1",
             ),
@@ -584,6 +770,7 @@ def test_image_model_preflight_fails_when_endpoint_missing() -> None:
 
 def test_photo_damage_vlm_calls_openai_compatible_http_endpoint(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     photo_path = tmp_path / "photo.jpg"
     _make_image(photo_path, color=(120, 140, 160))
@@ -595,12 +782,14 @@ def test_photo_damage_vlm_calls_openai_compatible_http_endpoint(
     )
 
     try:
-        config = RunConfig(
+        config = _local_run_config(
             mode="ai",
             image_model=model_id,
             image_model_base_url=base_url,
             image_model_api_key="fixture-key",
         )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        configure_image_model_credentials(config)
         assert check_image_model_service(config)["models"] == [model_id]
 
         photo_input_table = PHOTO_INPUT.arrow_table(
@@ -616,7 +805,10 @@ def test_photo_damage_vlm_calls_openai_compatible_http_endpoint(
         )
         photo_table = PhotoQualityBatch()(photo_input_table)
         damage_table, run_table = run_photo_damage_vlm(
-            vane.connect(),
+            RunnerWorkspace(
+                tmp_path / "runner-workspace",
+                vane.connect(),
+            ),
             photo_input_table,
             photo_table,
             config,
@@ -1125,7 +1317,7 @@ def test_run_pipeline_writes_optional_label_outputs(tmp_path: Path) -> None:
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1154,7 +1346,7 @@ def test_quality_fixture_workspace_exercises_photo_review_and_eval(
     paths = build_quality_fixture_workspace(tmp_path / "fixture-workspace")
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=paths.data_root,
             workspace_root=paths.workspace_root,
             output_dir=paths.output_dir,
@@ -1204,9 +1396,8 @@ def test_run_pipeline_ai_mode_writes_photo_model_tables(
     data_root, workspace_root = _make_minimal_workspace(tmp_path)
     output_dir = tmp_path / "outputs"
 
-    def fake_prompt(input_rel, column, **kwargs):
-        assert column == "instruction"
-        assert kwargs["image_columns"] == ["file_bytes"]
+    def fake_prompt(input_rel, messages, **kwargs):
+        assert input_rel.select(*messages).columns == ["instruction", "file_bytes"]
         return _fake_prompt_response(input_rel, _damage_response_json())
 
     monkeypatch.setattr(photo_vlm, "prompt", fake_prompt)
@@ -1217,7 +1408,7 @@ def test_run_pipeline_ai_mode_writes_photo_model_tables(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1246,9 +1437,8 @@ def test_run_pipeline_semantic_profile_writes_photo_model_tables(
     data_root, workspace_root = _make_minimal_workspace(tmp_path)
     output_dir = tmp_path / "outputs"
 
-    def fake_prompt(input_rel, column, **kwargs):
-        assert column == "instruction"
-        assert kwargs["image_columns"] == ["file_bytes"]
+    def fake_prompt(input_rel, messages, **kwargs):
+        assert input_rel.select(*messages).columns == ["instruction", "file_bytes"]
         return _fake_prompt_response(input_rel, _damage_response_json())
 
     monkeypatch.setattr(photo_vlm, "prompt", fake_prompt)
@@ -1259,7 +1449,7 @@ def test_run_pipeline_semantic_profile_writes_photo_model_tables(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1293,7 +1483,7 @@ def test_run_pipeline_baseline_profile_omits_semantic_tables(
     monkeypatch.setattr(pipeline_module, "check_image_model_service", fail_preflight)
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1332,7 +1522,7 @@ def test_validate_outputs_requires_complete_semantic_tables(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=tmp_path / "outputs",
@@ -1383,7 +1573,7 @@ def test_run_pipeline_clears_stale_optional_outputs(
     )
 
     run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1397,7 +1587,7 @@ def test_run_pipeline_clears_stale_optional_outputs(
     ).exists()
 
     run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1437,13 +1627,20 @@ def test_run_pipeline_ai_mode_writes_photo_damage_eval_metrics(
             )
         ],
     )
+    worker_environment = {}
 
-    def fake_prompt(input_rel, column, **kwargs):
-        assert column == "instruction"
-        assert kwargs["image_columns"] == ["file_bytes"]
+    def fake_prompt(input_rel, messages, **kwargs):
+        assert worker_environment == {"OPENAI_API_KEY": "fixture-key"}
+        assert input_rel.select(*messages).columns == ["instruction", "file_bytes"]
         return _fake_prompt_response(input_rel, _damage_response_json())
 
+    def prewarm_worker(*, runner):
+        assert runner == "local"
+        worker_environment["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(photo_vlm, "prompt", fake_prompt)
+    monkeypatch.setattr(pipeline_module.vane, "configure", prewarm_worker)
     monkeypatch.setattr(
         pipeline_module,
         "check_image_model_service",
@@ -1451,13 +1648,14 @@ def test_run_pipeline_ai_mode_writes_photo_damage_eval_metrics(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
             mode="ai",
             write_parquet=False,
             photo_labels_path=photo_labels_path,
+            image_model_api_key="fixture-key",
         ),
         print_summary=False,
     )
@@ -1495,7 +1693,7 @@ def test_run_pipeline_ai_mode_accepts_openai_compatible_http_endpoint(
 
     try:
         result = run_pipeline(
-            RunConfig(
+            _local_run_config(
                 data_root=data_root,
                 workspace_root=workspace_root,
                 output_dir=output_dir,
@@ -1542,7 +1740,7 @@ def test_run_pipeline_ai_prompt_failure_review_references_existing_evidence(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1597,7 +1795,7 @@ def test_run_pipeline_semantic_profile_routes_model_failure_to_error_evidence(
     )
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1639,7 +1837,7 @@ def test_run_pipeline_semantic_strict_fails_on_model_error(
 
     try:
         run_pipeline(
-            RunConfig(
+            _local_run_config(
                 data_root=data_root,
                 workspace_root=workspace_root,
                 output_dir=tmp_path / "outputs",
@@ -1661,7 +1859,7 @@ def test_run_pipeline_end_to_end_writes_contract_outputs(tmp_path: Path) -> None
     output_dir = tmp_path / "outputs"
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,
@@ -1687,6 +1885,68 @@ def test_run_pipeline_end_to_end_writes_contract_outputs(tmp_path: Path) -> None
     ]["ok"]
 
 
+def test_ray_runner_executes_semantic_pipeline_end_to_end(tmp_path: Path) -> None:
+    data_root, workspace_root = _make_minimal_workspace(tmp_path)
+    output_dir = tmp_path / "ray-outputs"
+    model_id = "Qwen2.5-VL-3B-Instruct"
+    server, base_url = _start_openai_compatible_fixture(
+        model_id=model_id,
+        response_json=_damage_response_json(confidence=0.81),
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "RAY_ADDRESS": "local",
+            "RAY_LOG_TO_DRIVER": "0",
+            "VANE_PROGRESS": "0",
+        }
+    )
+
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "claims_evidence_graph.py"),
+                "--workspace-root",
+                str(workspace_root),
+                "--data-root",
+                str(data_root),
+                "--output-dir",
+                str(output_dir),
+                "--profile",
+                "semantic",
+                "--runner",
+                "ray",
+                "--execution-backend",
+                "ray_task",
+                "--image-model",
+                model_id,
+                "--image-model-base-url",
+                base_url,
+                "--image-model-api-key",
+                "fixture-key",
+                "--skip-parquet",
+            ],
+            cwd=PROJECT_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    metadata = json.loads((output_dir / "run_metadata.json").read_text())
+    assert metadata["runner"] == "ray"
+    assert metadata["execution_backend"] == "ray_task"
+    model_runs = read_jsonl(output_dir / "photo_model_runs.jsonl")
+    assert [row["status"] for row in model_runs] == ["success"]
+    assert len(server.requests) == 1
+
+
 def test_run_pipeline_summarizes_claim_with_no_files(tmp_path: Path) -> None:
     data_root, workspace_root = _make_minimal_workspace(tmp_path)
     output_dir = tmp_path / "outputs"
@@ -1706,7 +1966,7 @@ def test_run_pipeline_summarizes_claim_with_no_files(tmp_path: Path) -> None:
         output_file.write("\n")
 
     result = run_pipeline(
-        RunConfig(
+        _local_run_config(
             data_root=data_root,
             workspace_root=workspace_root,
             output_dir=output_dir,

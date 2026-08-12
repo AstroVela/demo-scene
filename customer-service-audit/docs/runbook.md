@@ -10,11 +10,11 @@ This runbook contains the exact environment, installation, service, configuratio
 | --- | --- |
 | Operating system | Ubuntu 24.04 x86_64, glibc 2.39 |
 | Python | CPython 3.12 |
-| Vane | `vane-ai==0.1.0a1` |
+| Vane | `vane-ai[openai]==0.1.0` |
 | MinIO | `127.0.0.1:9000` |
 | Model service | Qwen (OpenAI-compatible) at `127.0.0.1:8001` |
 
-The verified Vane release is published on public PyPI with x86_64 Linux wheels for CPython 3.10, 3.11, and 3.12, all tagged `manylinux_2_28` (glibc 2.28 or newer). This demo's launcher accepts only CPython 3.12. Windows and macOS are not supported because no native Vane wheels exist there.
+The verified Vane wheel and its dependencies are installed from PyPI. This demo's launcher accepts only CPython 3.12, and the validated environment is x86_64 Linux.
 
 Install the project-side Ubuntu tools:
 
@@ -22,6 +22,8 @@ Install the project-side Ubuntu tools:
 sudo apt update
 sudo apt install -y git curl python3.12 python3.12-venv
 ```
+
+Install uv using its official installation instructions and confirm that `uv --version` succeeds before continuing.
 
 MinIO and the Qwen service are external. The launcher connects to them but does not install, start, stop, or restart them.
 
@@ -33,40 +35,40 @@ Run all project commands from the `customer-service-audit` directory.
 
 ```bash
 cd customer-service-audit
-python3.12 -m venv .venv
+uv venv --python 3.12 .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 ```
 
-### 2. Install Vane from public PyPI
+### 2. Install Vane from PyPI
 
 ```bash
-python -m pip install vane-ai
+uv pip install 'vane-ai[openai]==0.1.0'
 ```
 
-`pyproject.toml` pins the validated `vane-ai==0.1.0a1` runtime, and the launcher rejects unvalidated Vane builds.
+PyPI supplies the exact Vane wheel and its dependencies. The launcher rejects any other Vane build.
 
 ### 3. Install the demo
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pip check
+uv pip install -r requirements.txt
+uv pip check
 ```
 
 `requirements.txt` installs this source tree in editable mode with its test extra. `pyproject.toml` is authoritative:
 
 | Dependency | Purpose |
 | --- | --- |
-| `vane-ai==0.1.0a1` | Vane APIs, custom DuckDB, and workers |
+| `vane-ai[openai]==0.1.0` | Vane APIs, engine, AI provider, and workers |
 | `openai==2.45.0` | OpenAI-compatible Qwen client |
 | `minio` | Object reads/writes and SHA-256 UDFs |
 | `faster-whisper` | CPU ASR: driver-owned on Local, stateful Actor on Ray |
 | `pyarrow` | Relation/Python data boundary |
 | `pyyaml` | Strict `runtime.yml` loading |
 | `pytz` | Stable timestamps |
+| `socksio==1.0.0` | SOCKS proxy support for the first-run Whisper model download |
 | `pytest` | Fast tests |
 
-`pip check` must finish with `No broken requirements found`.
+`uv pip check` must finish without reporting an incompatible or missing dependency.
 
 ## Prepare the external services
 
@@ -120,18 +122,25 @@ Each command exits nonzero on any failure and prints a single-line summary on su
 
 ## Runner modes
 
+The checked-in `runtime.yml` defaults to `runner: ray`. This path was verified end to end on a local Ray runtime with MinIO, the real faster-whisper ASR engine, and the local Qwen service.
+
 `runner: local`
-: One driver-owned faster-whisper engine; every usable `(bucket, object_key)` locator is transcribed once on the driver and the immutable result is attached to SQL as a lookup UDF. Best for first-time validation.
+: One driver-owned faster-whisper engine; every usable `(bucket, object_key)` locator is transcribed once on the driver and the immutable result is attached to SQL as a lookup UDF. Use this supported fallback only when driver-owned execution is intentional.
+
+The first run downloads the configured faster-whisper model from Hugging Face when it is not already cached. The launcher preserves remote proxy variables and bypasses them only for the loopback Qwen endpoint through `NO_PROXY`/`no_proxy`.
 
 `runner: ray`
 : The `AsrTranscribeActor` is attached as a stateful function; the whisper model loads lazily once per Ray worker. Requires a reachable Ray cluster configured through Vane's `VANE_*` environment variables.
+
+The pipeline sets `OPENAI_API_KEY` before a local Ray runtime can start. When connecting to an existing or external Ray cluster, provision `OPENAI_API_KEY` on every worker through that cluster's runtime or secret management before launching the demo; changing the driver environment cannot update workers that already exist. A multi-node target cluster still requires an infrastructure smoke test for shared paths, worker credentials, and capacity.
 
 ## Troubleshooting
 
 | Symptom | Cause / contract |
 | --- | --- |
 | `Python version mismatch` | Run under CPython 3.12; the launcher rejects other versions. |
-| `cannot import duckdb and vane` | `vane-ai` is missing or installed outside the active venv. |
+| `cannot import vane` | `vane-ai` is missing or installed outside the active venv. |
+| Whisper model download or SOCKS proxy failure | Confirm outbound Hugging Face access and reinstall step 3 so `socksio` is present. |
 | `MinIO (127.0.0.1:9000): ...` | MinIO is down, credentials differ, or the bucket contract changed. |
 | `Qwen health probe ...` | `ai.health_url` is unreachable or returns non-200. |
 | `review_unusable_audio` | WAV header invalid, or duration outside [1s, 900s]. |

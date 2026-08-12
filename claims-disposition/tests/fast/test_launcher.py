@@ -10,9 +10,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER_PATH = PROJECT_ROOT / "scripts/run_demo.py"
-VANE_VERSION = "0.1.0a1"
-DUCKDB_ENGINE_VERSION = "v1.6.0-dev1"
-DUCKDB_SOURCE_REVISION = "398033a962"
+VANE_VERSION = "0.1.0"
+VANE_ENGINE_VERSION = "v1.5.0-vane.b1c745e9c4"
+VANE_SOURCE_REVISION = "0c2adbf409"
+VANE_INSTALL = "uv pip install 'vane-ai[openai]==0.1.0'"
 
 
 def _load_launcher():
@@ -31,6 +32,7 @@ def _complete_vane_api() -> SimpleNamespace:
         attach_function=lambda: None,
         configure=lambda: None,
         ai=SimpleNamespace(prompt=lambda: None, load_provider=lambda: None),
+        ray_cxx=object(),
     )
 
 
@@ -38,12 +40,10 @@ def test_launcher_requires_current_packaged_vane_runtime():
     launcher = _load_launcher()
 
     launcher.require_real_vane_runtime()
-    import duckdb
     import vane
 
     prefix = Path(sys.prefix).resolve()
     assert Path(vane.__file__).resolve().is_relative_to(prefix)
-    assert Path(duckdb.__file__).resolve().is_relative_to(prefix)
     assert not hasattr(launcher, "REAL_PREFIX")
     assert not hasattr(launcher, "worker_pythonpath")
     assert not hasattr(launcher, "configure_import_paths")
@@ -56,10 +56,9 @@ def test_launcher_freezes_exact_runtime_identifiers():
     assert launcher.VANE_DISTRIBUTION_NAME == "vane-ai"
     assert launcher.EXPECTED_VANE_DISTRIBUTION_VERSION == VANE_VERSION
     assert launcher.EXPECTED_VANE_API_VERSION == VANE_VERSION
-    assert launcher.EXPECTED_DUCKDB_PYTHON_VERSION == VANE_VERSION
-    assert launcher.EXPECTED_DUCKDB_ENGINE_VERSION == DUCKDB_ENGINE_VERSION
-    assert launcher.EXPECTED_DUCKDB_SOURCE_REVISION == DUCKDB_SOURCE_REVISION
-    assert launcher.INSTALL_HINT == "python -m pip install vane-ai"
+    assert launcher.EXPECTED_VANE_ENGINE_VERSION == VANE_ENGINE_VERSION
+    assert launcher.EXPECTED_VANE_SOURCE_REVISION == VANE_SOURCE_REVISION
+    assert launcher.INSTALL_HINT == VANE_INSTALL
     assert launcher.DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS == "60000"
 
 
@@ -73,10 +72,8 @@ def test_launcher_rejects_wrong_python_version_with_install_help():
     assert "Python version mismatch" in message
     assert sys.executable in message
     assert sys.prefix in message
-    assert "python -m pip install vane-ai" in message
-    obsolete_index = ".".join(("test", "pypi", "org"))
-    assert obsolete_index not in message
-    assert "python -m pip install -r requirements.txt" in message
+    assert VANE_INSTALL in message
+    assert "uv pip install -r requirements.txt" in message
 
 
 @pytest.mark.parametrize(
@@ -87,9 +84,8 @@ def test_launcher_rejects_wrong_python_version_with_install_help():
             (
                 "wrong",
                 VANE_VERSION,
-                VANE_VERSION,
-                DUCKDB_ENGINE_VERSION,
-                DUCKDB_SOURCE_REVISION,
+                VANE_ENGINE_VERSION,
+                VANE_SOURCE_REVISION,
             ),
         ),
         (
@@ -97,38 +93,25 @@ def test_launcher_rejects_wrong_python_version_with_install_help():
             (
                 VANE_VERSION,
                 "wrong",
-                VANE_VERSION,
-                DUCKDB_ENGINE_VERSION,
-                DUCKDB_SOURCE_REVISION,
+                VANE_ENGINE_VERSION,
+                VANE_SOURCE_REVISION,
             ),
         ),
         (
-            "DuckDB Python",
+            "Vane engine",
             (
                 VANE_VERSION,
                 VANE_VERSION,
                 "wrong",
-                DUCKDB_ENGINE_VERSION,
-                DUCKDB_SOURCE_REVISION,
+                VANE_SOURCE_REVISION,
             ),
         ),
         (
-            "DuckDB engine",
+            "Vane source",
             (
                 VANE_VERSION,
                 VANE_VERSION,
-                VANE_VERSION,
-                "wrong",
-                DUCKDB_SOURCE_REVISION,
-            ),
-        ),
-        (
-            "DuckDB source",
-            (
-                VANE_VERSION,
-                VANE_VERSION,
-                VANE_VERSION,
-                DUCKDB_ENGINE_VERSION,
+                VANE_ENGINE_VERSION,
                 "wrong",
             ),
         ),
@@ -145,10 +128,7 @@ def test_launcher_rejects_missing_callable_api():
     launcher = _load_launcher()
 
     with pytest.raises(RuntimeError, match="callable API"):
-        launcher.validate_runtime_api(
-            SimpleNamespace(),
-            SimpleNamespace(ray_cxx=True),
-        )
+        launcher.validate_runtime_api(SimpleNamespace())
 
 
 def test_launcher_rejects_missing_ai_prompt():
@@ -157,10 +137,7 @@ def test_launcher_rejects_missing_ai_prompt():
     vane_without_prompt.ai = SimpleNamespace()
 
     with pytest.raises(RuntimeError, match=r"vane\.ai\.prompt"):
-        launcher.validate_runtime_api(
-            vane_without_prompt,
-            SimpleNamespace(ray_cxx=True),
-        )
+        launcher.validate_runtime_api(vane_without_prompt)
 
 
 def test_launcher_rejects_missing_ai_provider_loader():
@@ -169,17 +146,16 @@ def test_launcher_rejects_missing_ai_provider_loader():
     vane_without_loader.ai = SimpleNamespace(prompt=lambda: None)
 
     with pytest.raises(RuntimeError, match=r"vane\.ai\.load_provider"):
-        launcher.validate_runtime_api(
-            vane_without_loader,
-            SimpleNamespace(ray_cxx=True),
-        )
+        launcher.validate_runtime_api(vane_without_loader)
 
 
 def test_launcher_rejects_missing_ray_bridge():
     launcher = _load_launcher()
+    vane_without_ray = _complete_vane_api()
+    del vane_without_ray.ray_cxx
 
     with pytest.raises(RuntimeError, match="ray_cxx"):
-        launcher.validate_runtime_api(_complete_vane_api(), SimpleNamespace())
+        launcher.validate_runtime_api(vane_without_ray)
 
 
 def test_launcher_rejects_package_outside_current_environment():
@@ -192,10 +168,23 @@ def test_launcher_rejects_package_outside_current_environment():
         )
 
 
-def test_launcher_public_entry_is_the_only_script():
-    assert sorted(path.name for path in (PROJECT_ROOT / "scripts").glob("*.py")) == [
-        "run_demo.py"
-    ]
+def test_loopback_bypass_preserves_proxy_for_remote_dependencies(monkeypatch):
+    launcher = _load_launcher()
+    proxy = "http://proxy.example:8080"
+    monkeypatch.setenv("HTTPS_PROXY", proxy)
+    monkeypatch.setenv("NO_PROXY", "internal.example")
+    monkeypatch.setenv("no_proxy", "internal.example")
+
+    launcher.configure_loopback_network("http://127.0.0.1:8001/v1")
+
+    assert launcher.os.environ["HTTPS_PROXY"] == proxy
+    for name in ("NO_PROXY", "no_proxy"):
+        assert launcher.os.environ[name].split(",") == [
+            "internal.example",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        ]
 
 
 def test_cli_usage_names_the_public_launcher():

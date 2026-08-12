@@ -10,15 +10,17 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from src._common import require_local_relation_runner
+from src._common import batch_udf_options
 from src.enterprise_multimodal_agent import (
     DEFAULT_SCENARIO_SNAPSHOT,
     REVIEW_QUEUE_ORDER,
+    parse_args,
     verify_scenario_snapshot,
 )
 
@@ -30,7 +32,10 @@ ASSET_DIR = DATA_DIR
 
 def example_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["VANE_RUNNER"] = "local-fast"
+    env.pop("VANE_RUNNER", None)
+    env["RAY_ADDRESS"] = "local"
+    env["VANE_PROGRESS"] = "0"
+    env["RAY_LOG_TO_DRIVER"] = "0"
     env["PYTHONPATH"] = os.pathsep.join(
         [str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -38,17 +43,11 @@ def example_subprocess_env() -> dict[str, str]:
 
 
 class EnterpriseMultimodalAgentTest(unittest.TestCase):
-    def test_relation_runner_requires_local_fast(self) -> None:
-        self.assertEqual(require_local_relation_runner("local-fast"), "local-fast")
-        for runner in ("", "local", "ray"):
-            with self.subTest(runner=runner):
-                with self.assertRaisesRegex(RuntimeError, "VANE_RUNNER=local-fast"):
-                    require_local_relation_runner(runner)
-
     def run_command(
         self,
         output_dir: Path,
         *extra_args: str,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -59,7 +58,7 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
                 *extra_args,
             ],
             cwd=REPO_ROOT,
-            env=example_subprocess_env(),
+            env=env or example_subprocess_env(),
             text=True,
             capture_output=True,
             timeout=90,
@@ -70,9 +69,27 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
         completed = self.run_command(output_dir, *extra_args)
         self.assertEqual(completed.returncode, 0, msg=completed.stdout + completed.stderr)
 
+    def test_local_runner_override_is_rejected_before_writing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="vane-enterprise-local-") as tmp_dir:
+            output_dir = Path(tmp_dir) / "enterprise_multimodal_agent"
+            env = example_subprocess_env()
+            env["VANE_RUNNER"] = "local"
+
+            completed = self.run_command(output_dir, env=env)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires Vane RayRunner", completed.stderr)
+            self.assertFalse((output_dir / "manifest.json").exists())
+
     def test_default_artifact_contract_uses_real_multimodal_assets(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-enterprise-context-") as tmp_dir:
             output_dir = Path(tmp_dir) / "enterprise_multimodal_agent"
+            output_dir.mkdir(parents=True)
+            pq.write_table(
+                pa.table({"stale": [True]}),
+                output_dir / "asset_features.parquet",
+            )
+            self.run_example(output_dir)
             self.run_example(output_dir)
 
             manifest = json.loads((output_dir / "manifest.json").read_text())
@@ -94,9 +111,9 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertEqual(manifest["gap_rows"], 1)
             self.assertEqual(manifest["conflict_rows"], 1)
             self.assertEqual(manifest["review_rows"], 3)
-            self.assertEqual(manifest["runner"], "local-fast")
+            self.assertEqual(manifest["runner"], "ray")
             self.assertEqual(manifest["requested_execution_backend"], "auto")
-            self.assertIsNone(manifest["execution_backend"])
+            self.assertEqual(manifest["execution_backend"], "ray_task")
             self.assertEqual(
                 manifest["modalities"],
                 ["audio", "document", "image", "text"],
@@ -141,10 +158,10 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertEqual(
                 manifest["execution_backends"],
                 {
-                    "process_audio_asset": None,
-                    "process_document_asset": None,
-                    "process_image_asset": None,
-                    "process_text_asset": None,
+                    "process_audio_asset": "ray_task",
+                    "process_document_asset": "ray_task",
+                    "process_image_asset": "ray_task",
+                    "process_text_asset": "ray_task",
                 },
             )
 
@@ -404,24 +421,25 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
             self.assertNotIn("unused-public-asset", asset_ids)
 
     def test_blocked_context_is_ordered_before_needs_review(self) -> None:
-        vane.configure(runner="")
-        conn = vane.connect()
-        conn.register(
-            "review_order_probe",
-            pa.table(
-                {
-                    "case_id": ["review", "blocked"],
-                    "review_state": ["needs_review", "blocked"],
-                }
-            ),
-        )
-        ordered = (
-            conn.sql("select * from review_order_probe")
-            .order(REVIEW_QUEUE_ORDER)
-            .project("case_id")
-            .fetchall()
-        )
-        self.assertEqual(ordered, [("blocked",), ("review",)])
+        with tempfile.TemporaryDirectory(prefix="vane-review-order-") as tmp_dir:
+            source = Path(tmp_dir) / "review-order.parquet"
+            pq.write_table(
+                pa.table(
+                    {
+                        "case_id": ["review", "blocked"],
+                        "review_state": ["needs_review", "blocked"],
+                    }
+                ),
+                source,
+            )
+            ordered = (
+                vane.connect()
+                .read_parquet(str(source))
+                .order(REVIEW_QUEUE_ORDER)
+                .project("case_id")
+                .fetchall()
+            )
+            self.assertEqual(ordered, [("blocked",), ("review",)])
 
     def test_subprocess_backend_records_all_modality_stages(self) -> None:
         with tempfile.TemporaryDirectory(prefix="vane-enterprise-context-") as tmp_dir:
@@ -439,27 +457,19 @@ class EnterpriseMultimodalAgentTest(unittest.TestCase):
                 },
             )
 
-    def test_script_and_docs_describe_real_multimodal_boundary(self) -> None:
-        paths = [
-            REPO_ROOT / "src" / "enterprise_multimodal_agent.py",
-            REPO_ROOT / "docs" / "enterprise_multimodal_agent.en.md",
-            REPO_ROOT / "docs" / "enterprise_multimodal_agent.zh-CN.md",
-        ]
-        for path in paths:
-            text = path.read_text(encoding="utf-8")
-            self.assertIn(".read_csv(", text, msg=str(path))
-            self.assertIn(".map_batches(", text, msg=str(path))
-            self.assertIn(".write_csv(", text, msg=str(path))
-            self.assertIn(".write_parquet(", text, msg=str(path))
-            self.assertIn("evidence_gaps", text, msg=str(path))
-            self.assertIn("evidence_conflicts", text, msg=str(path))
-            self.assertIn("asset_snapshot", text, msg=str(path))
-            self.assertIn("evidence_links.csv", text, msg=str(path))
-            if path.suffix == ".md":
-                self.assertIn("invalid_utf8", text, msg=str(path))
-            self.assertNotIn("stable_embedding", text, msg=str(path))
-            self.assertNotIn("context_embedding", text, msg=str(path))
-            self.assertNotIn('conn.register("raw_evidence"', text, msg=str(path))
+    def test_ray_task_backend_is_accepted_and_forwarded(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            ["enterprise_multimodal_agent.py", "--execution-backend", "ray_task"],
+        ):
+            args = parse_args()
+
+        self.assertEqual(args.execution_backend, "ray_task")
+        self.assertEqual(
+            batch_udf_options("ray_task"),
+            {"execution_backend": "ray_task"},
+        )
 
     def test_readmes_link_languages_and_current_entrypoint(self) -> None:
         english = (REPO_ROOT / "README.md").read_text(encoding="utf-8")

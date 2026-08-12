@@ -42,10 +42,10 @@ ai:
 """
 
 
-def test_checked_in_config_selects_real_qwen_and_local_runner():
+def test_checked_in_config_selects_real_qwen_and_ray_runner():
     config = load_runtime_config(PROJECT_ROOT / "runtime.yml")
 
-    assert config.runner == "local"
+    assert config.runner == "ray"
     assert config.output_dir == PROJECT_ROOT / "output"
     assert config.postgres.raw_relation_names == (
         "procurement_audit_raw.projects",
@@ -62,7 +62,7 @@ def test_checked_in_config_selects_real_qwen_and_local_runner():
     assert config.ocr.engine == "rapidocr"
 
 
-def test_config_rejects_non_loopback_ai_endpoint(tmp_path):
+def test_config_accepts_remote_https_ai_endpoint(tmp_path):
     path = tmp_path / "runtime.yml"
     path.write_text(
         VALID_YAML.replace(
@@ -72,8 +72,9 @@ def test_config_rejects_non_loopback_ai_endpoint(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="loopback HTTP URL"):
-        load_runtime_config(path)
+    config = load_runtime_config(path)
+
+    assert config.ai.base_url == "https://models.example.com/v1"
 
 
 def test_config_rejects_invalid_postgres_identifier(tmp_path):

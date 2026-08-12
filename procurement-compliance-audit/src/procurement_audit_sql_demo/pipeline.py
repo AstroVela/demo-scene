@@ -9,12 +9,11 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any
 
-import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import vane
 
-from .ai import build_evidence_ai_relation
+from .ai import build_evidence_ai_relation, configure_provider_credentials
 from .config import RuntimeConfig
 from .minio_store import MinioStore
 from .output_writer import PublishedOutputs, write_outputs
@@ -162,9 +161,8 @@ def _relation_rows(
 ) -> list[dict[str, Any]]:
     name = _safe_identifier(relation_name)
     order = f" order by {_safe_identifier(order_by)}" if order_by else ""
-    relation = connection.sql(f"select * from {name}{order}")
-    columns = list(relation.columns)
-    return [dict(zip(columns, row)) for row in relation.fetchall()]
+    table = connection.execute(f"select * from {name}{order}").to_arrow_table()
+    return table.to_pylist()
 
 
 def read_source_bundle(config: RuntimeConfig) -> SourceBundle:
@@ -270,7 +268,7 @@ def _execute_runner_sql_file(
 
     for source_name in source_relations:
         name = _safe_identifier(source_name)
-        table = connection.sql(f"select * from {name}").to_arrow_table()
+        table = connection.execute(f"select * from {name}").to_arrow_table()
         workspace.relation_from_table(
             runner_connection,
             name,
@@ -297,10 +295,11 @@ def run_pipeline(
     config: RuntimeConfig,
     *,
     configure_runner: Callable[..., Any] = vane.configure,
+    initialize_runner: Callable[[], Any] = vane.get_or_create_runner,
     runtime_probe: Callable[[RuntimeConfig], None] = probe_runtime,
     runtime_function_attacher: Callable[..., None] = attach_runtime_functions,
     ai_relation_builder: Callable[..., Any] = build_evidence_ai_relation,
-    connection_factory: Callable[[], Any] = duckdb.connect,
+    connection_factory: Callable[[], Any] = vane.connect,
     source_loader: Callable[[RuntimeConfig], SourceBundle] = read_source_bundle,
     local_ocr_result_builder: Callable[
         [SourceBundle, RuntimeConfig], Mapping[tuple[str, str], str]
@@ -310,10 +309,14 @@ def run_pipeline(
 ) -> PipelineResult:
     """Execute all eight core relations, verify the fixture, and publish JSONL."""
 
+    configure_provider_credentials(config.ai)
     # The configured backend changes execution only; the relation code is shared.
     configure_runner(runner=config.runner)
     # Fail before computation if either PostgreSQL or MinIO is unavailable.
     runtime_probe(config)
+    # Start Ray before driver connections and attached UDFs enlarge the process.
+    # Provider credentials must already be present so local workers inherit them.
+    initialize_runner()
     source = source_loader(config)
     local_ocr_results = (
         local_ocr_result_builder(source, config)

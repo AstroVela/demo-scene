@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.csv as pacsv
+import pyarrow.parquet as pq
 
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+")
@@ -19,25 +23,118 @@ def batch_udf_options(execution_backend: str) -> dict[str, str]:
     return {"execution_backend": execution_backend}
 
 
+def require_ray_runner(runner: str) -> None:
+    if runner != "ray":
+        raise RuntimeError(
+            "this demo requires Vane RayRunner; unset VANE_RUNNER or set it to ray"
+        )
+
+
 def backend_metadata_entry(execution_backend: str) -> dict[str, Any]:
     inferred = execution_backend == "auto"
     return {
         "requested_backend": execution_backend,
-        "actual_backend": None if inferred else execution_backend,
+        "actual_backend": "ray_task" if inferred else execution_backend,
         "resolution": "vane_inferred" if inferred else "explicit",
         "fallback_reason": "",
     }
 
 
-def require_local_relation_runner(runner: str | None) -> str:
-    normalized = str(runner or "").strip().lower()
-    if normalized != "local-fast":
-        raise RuntimeError(
-            f"runner={normalized!r} is not supported by these examples because "
-            "their named tables live in the client connection; set "
-            "VANE_RUNNER=local-fast"
-        )
-    return normalized
+def read_csv_as_strings(path: Path) -> pa.Table:
+    with path.open(newline="", encoding="utf-8") as input_file:
+        columns = next(csv.reader(input_file))
+    return pacsv.read_csv(
+        path,
+        convert_options=pacsv.ConvertOptions(
+            column_types={column: pa.string() for column in columns},
+            strings_can_be_null=False,
+        ),
+    )
+
+
+def _replace_path(staged_path: Path, target_path: Path) -> None:
+    previous_path = staged_path.parent / "previous"
+    if target_path.exists():
+        target_path.replace(previous_path)
+    try:
+        staged_path.replace(target_path)
+    except BaseException:
+        if previous_path.exists():
+            previous_path.replace(target_path)
+        raise
+
+
+class RunnerWorkspace:
+    """Stage driver inputs and RayRunner results as Parquet scans."""
+
+    def __init__(self, root: Path, connection: Any) -> None:
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.connection = connection
+        self.counter = 0
+
+    def next_path(self, name: str) -> Path:
+        self.counter += 1
+        return self.root / f"{self.counter:03d}-{name}.parquet"
+
+    def stage_table(self, name: str, table: pa.Table) -> Any:
+        path = self.next_path(name)
+        pq.write_table(table, path)
+        return self.connection.read_parquet(str(path))
+
+    def write_relation(self, name: str, relation: Any) -> Path:
+        path = self.next_path(name)
+        relation.write_parquet(str(path))
+        if not path.exists():
+            pq.write_table(relation.limit(0).to_arrow_table(), path)
+        return path
+
+    def write_parquet(self, relation: Any, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(
+            prefix=f".{path.name}.tmp-", dir=path.parent
+        ) as temp_root:
+            staged_path = Path(temp_root) / "new"
+            relation.write_parquet(str(staged_path))
+            _replace_path(staged_path, path)
+
+    def write_parquet_table(self, table: pa.Table, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(
+            prefix=f".{path.name}.tmp-", dir=path.parent
+        ) as temp_root:
+            staged_path = Path(temp_root) / "new"
+            pq.write_table(table, staged_path)
+            _replace_path(staged_path, path)
+
+    def materialize(self, name: str, relation: Any) -> Any:
+        return self.stage_table(name, relation.project("*").to_arrow_table())
+
+    def materialize_view(self, name: str, relation: Any) -> Any:
+        materialized = self.materialize(name, relation)
+        materialized.create_view(name, replace=True)
+        return materialized
+
+    def write_csv(self, relation: Any, path: Path) -> None:
+        table = relation.project("*").to_arrow_table()
+        arrays = []
+        for field, column in zip(table.schema, table.columns):
+            if pa.types.is_nested(field.type):
+                arrays.append(
+                    pa.array(
+                        [
+                            json.dumps(value, sort_keys=True, default=str)
+                            if value is not None
+                            else None
+                            for value in column.to_pylist()
+                        ],
+                        type=pa.string(),
+                    )
+                )
+            else:
+                arrays.append(column)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pacsv.write_csv(pa.Table.from_arrays(arrays, names=table.column_names), path)
 
 
 def positive_int(value: str) -> int:

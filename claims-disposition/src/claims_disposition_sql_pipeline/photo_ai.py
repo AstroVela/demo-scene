@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from typing import Any
 import urllib.request
 
@@ -118,6 +119,13 @@ class PhotoAiRequest:
 
 class PhotoAiInputError(ValueError):
     """Raised when material facts cannot form a trustworthy AI request."""
+
+
+def configure_provider_credentials(config: AiConfig) -> None:
+    """Configure driver credentials before any local Ray workers start."""
+
+    if config.provider == "openai":
+        os.environ["OPENAI_API_KEY"] = config.api_key
 
 
 @dataclass(frozen=True)
@@ -431,18 +439,18 @@ def _prompt_locally(
 ) -> list[tuple[PhotoAiRequest, str]]:
     """Use Vane's provider API without LocalRunner's subprocess actor boundary."""
 
-    provider = vane.ai.load_provider(
-        config.provider,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        timeout=config.timeout_seconds,
-    )
+    configure_provider_credentials(config)
+    provider = vane.ai.load_provider(config.provider)
     prompter = provider.get_prompter(
         model=config.model,
         system_message=DAMAGE_SYSTEM_MESSAGE,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-        on_error="raise",
+        options={
+            "base_url": config.base_url,
+            "timeout": config.timeout_seconds,
+            "use_chat_completions": True,
+            "temperature": config.temperature,
+            "max_output_tokens": config.max_tokens,
+        },
     ).instantiate()
     completed: list[tuple[PhotoAiRequest, str]] = []
     # Reuse one event loop because the provider owns one async HTTP client.
@@ -489,23 +497,10 @@ def build_photo_ai_relation(
             else result_factory(table)
         )
 
-    provider_options = vane.ai.OpenAIProviderOptions(
-        base_url=config.ai.base_url,
-        api_key=config.ai.api_key,
-        timeout=config.ai.timeout_seconds,
-        concurrency=config.ai.concurrency,
-        max_api_concurrency=config.ai.concurrency,
-    )
-    prompt_options = vane.ai.OpenAIPromptOptions(
-        temperature=config.ai.temperature,
-        max_tokens=config.ai.max_tokens,
-        on_error="raise",
-    )
-
     completed: list[tuple[PhotoAiRequest, str]] = []
     for request_index, request in enumerate(requests):
-        # Vane prompt output is output-only, and actor evaluation order is not a
-        # stable relation row order. One-row calls bind audit metadata directly.
+        # Actor evaluation order is not a stable relation row order. One-row
+        # calls bind audit metadata directly.
         request_table = _request_to_arrow(request)
         relation = (
             session.from_arrow(request_table)
@@ -514,21 +509,26 @@ def build_photo_ai_relation(
         )
         result = vane.ai.prompt(
             relation,
-            "prompt_text",
-            image_columns=["image_bytes"],
-            provider="openai",
+            [vane.col("prompt_text"), vane.col("image_bytes")],
+            provider=config.ai.provider,
             model=config.ai.model,
-            provider_options=provider_options,
-            prompt_options=prompt_options,
             system_message=DAMAGE_SYSTEM_MESSAGE,
             output_column="raw_damage_response",
-            num_gpus=0,
+            on_error="raise",
+            base_url=config.ai.base_url,
+            timeout=config.ai.timeout_seconds,
+            use_chat_completions=True,
+            temperature=config.ai.temperature,
+            max_output_tokens=config.ai.max_tokens,
+            max_concurrency_per_actor=config.ai.concurrency,
         )
+        # Relation Prompt preserves request columns and appends its output.
+        response_relation = result.select(vane.col("raw_damage_response"))
         # Materialize through Relation.write_parquet when a Runner is configured.
         if response_materializer is None:
-            response_rows = result.fetchall()
+            response_rows = response_relation.fetchall()
         else:
-            response_table = response_materializer(result)
+            response_table = response_materializer(response_relation)
             if response_table.num_columns != 1:
                 raise PhotoAiInputError(
                     f"AI response row {request_index} must contain exactly one column"
