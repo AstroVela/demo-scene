@@ -7,7 +7,9 @@ import io
 import json
 import math
 import re
+import urllib.request
 from typing import Any, Mapping
+import uuid
 import wave
 
 import vane
@@ -177,6 +179,103 @@ def _build_faster_whisper(config: AsrConfig):
     return transcribe
 
 
+def _wav_duration_seconds(wav_bytes: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as audio_file:
+            rate = audio_file.getframerate()
+            if rate <= 0:
+                return 0.0
+            return round(audio_file.getnframes() / rate, 4)
+    except (wave.Error, EOFError):
+        return 0.0
+
+
+def _build_openai_audio(config: AsrConfig):
+    """Transcribe through an OpenAI-compatible /audio/transcriptions endpoint.
+
+    The engine posts each recording as multipart form data to an internal
+    model gateway (for example a qwen-asr service), so no local model files
+    and no Hugging Face access are required.
+    """
+
+    endpoint = config.base_url.rstrip("/")
+    if not endpoint.endswith("/audio/transcriptions"):
+        endpoint = f"{endpoint}/audio/transcriptions"
+
+    def transcribe(wav_bytes: bytes) -> dict[str, Any]:
+        boundary = f"----vaneAudit{uuid.uuid4().hex}"
+        text_parts = [
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="model"\r\n\r\n'
+                f"{config.model}\r\n"
+            ),
+            (
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="response_format"\r\n\r\n'
+                "json\r\n"
+            ),
+        ]
+        if config.language:
+            text_parts.append(
+                f"--{boundary}\r\n"
+                'Content-Disposition: form-data; name="language"\r\n\r\n'
+                f"{config.language}\r\n"
+            )
+        text_parts.append(
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+            "Content-Type: audio/wav\r\n\r\n"
+        )
+        body = (
+            "".join(text_parts).encode("utf-8")
+            + wav_bytes
+            + f"\r\n--{boundary}--\r\n".encode("utf-8")
+        )
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": f"Bearer {config.api_key}",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=config.timeout_seconds
+            ) as response:
+                raw = response.read().decode("utf-8")
+        except Exception as exc:
+            raise RuntimeError(
+                f"openai-audio transcription failed against {endpoint}: {exc}"
+            ) from exc
+        try:
+            payload = json.loads(raw)
+            text = str(payload.get("text", "") or "").strip()
+        except (json.JSONDecodeError, AttributeError):
+            # Some gateways return plain text despite response_format=json.
+            text = raw.strip()
+        return {
+            "text": text,
+            "language": config.language,
+            "language_probability": 1.0 if config.language else 0.0,
+            "duration_seconds": _wav_duration_seconds(wav_bytes),
+            "segment_count": 1 if text else 0,
+        }
+
+    return transcribe
+
+
+def _default_engine_factory(config: AsrConfig):
+    """Pick the ASR backend for the configured engine."""
+
+    if config.engine == "openai-audio":
+        return lambda: _build_openai_audio(config)
+    return lambda: _build_faster_whisper(config)
+
+
 @vane.cls(
     actor_number=1,
     return_dtype="VARCHAR",
@@ -194,9 +293,7 @@ class AsrTranscribeActor:
     ) -> None:
         self.store = MinioStore(minio_config)
         self.asr_config = asr_config
-        self._engine_factory = engine_factory or (
-            lambda: _build_faster_whisper(asr_config)
-        )
+        self._engine_factory = engine_factory or _default_engine_factory(asr_config)
         self.engine = None
 
     def __call__(self, bucket: str, object_key: str) -> str:

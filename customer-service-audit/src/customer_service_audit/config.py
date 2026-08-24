@@ -41,6 +41,9 @@ class AsrConfig:
     language: str
     beam_size: int
     min_text_chars: int
+    # openai-audio (gateway ASR) carries its own endpoint and credential.
+    base_url: str = ""
+    api_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,23 @@ def _loopback_http_url(section: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _asr_http_url(section: Mapping[str, Any], key: str) -> str:
+    """Validate an OpenAI-compatible ASR gateway URL (http or https, any host)."""
+
+    path = f"asr.{key}"
+    raw_value = section.get(key)
+    if isinstance(raw_value, str) and _CONTROL_CHARACTERS.search(raw_value):
+        raise ConfigError(f"{path} must not contain control characters")
+    value = _string(section, "asr", key)
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise ConfigError(f"{path} must be a valid http(s) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError(f"{path} must be a valid http(s) URL")
+    return value
+
+
 def _positive_integer(section: Mapping[str, Any], section_name: str, key: str) -> int:
     path = f"{section_name}.{key}"
     value = section.get(key)
@@ -191,20 +211,38 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
 
     asr_data = _section(root, "asr")
     engine = _string(asr_data, "asr", "engine")
-    if engine != "faster-whisper":
-        raise ConfigError("asr.engine must be faster-whisper")
-    device = _string(asr_data, "asr", "device")
-    if device not in {"cpu", "cuda"}:
-        raise ConfigError("asr.device must be cpu or cuda")
-    asr = AsrConfig(
-        engine=engine,
-        model=_string(asr_data, "asr", "model"),
-        device=device,
-        compute_type=_string(asr_data, "asr", "compute_type"),
-        language=_string(asr_data, "asr", "language"),
-        beam_size=_positive_integer(asr_data, "asr", "beam_size"),
-        min_text_chars=_positive_integer(asr_data, "asr", "min_text_chars"),
-    )
+    model = _string(asr_data, "asr", "model")
+    language = _string(asr_data, "asr", "language")
+    min_text_chars = _positive_integer(asr_data, "asr", "min_text_chars")
+    if engine == "faster-whisper":
+        device = _string(asr_data, "asr", "device")
+        if device not in {"cpu", "cuda"}:
+            raise ConfigError("asr.device must be cpu or cuda")
+        asr = AsrConfig(
+            engine=engine,
+            model=model,
+            device=device,
+            compute_type=_string(asr_data, "asr", "compute_type"),
+            language=language,
+            beam_size=_positive_integer(asr_data, "asr", "beam_size"),
+            min_text_chars=min_text_chars,
+        )
+    elif engine == "openai-audio":
+        asr = AsrConfig(
+            engine=engine,
+            model=model,
+            device="",
+            compute_type="",
+            language=language,
+            beam_size=1,
+            min_text_chars=min_text_chars,
+            base_url=_asr_http_url(asr_data, "base_url"),
+            api_key=_string(asr_data, "asr", "api_key"),
+        )
+    else:
+        raise ConfigError(
+            "asr.engine must be faster-whisper or openai-audio"
+        )
 
     ai_data = _section(root, "ai")
     provider = _string(ai_data, "ai", "provider")
