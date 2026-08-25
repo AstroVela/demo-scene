@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from importlib import metadata as importlib_metadata
 import os
 from pathlib import Path
+import re
 import sys
 from urllib.parse import urlparse
 
@@ -40,11 +41,30 @@ def validate_python_version(actual: tuple[int, int]) -> None:
         )
 
 
+def _vane_version_is_acceptable(actual: str, expected: str) -> bool:
+    """Accept the pinned release or a newer local development build.
+
+    Public PyPI wheels report exactly the pinned version (``0.1.0``). A
+    local source build reports a setuptools-scm development version such
+    as ``0.2.0.dev553``; accept those when their base release is at or
+    above the pinned one.
+    """
+
+    if actual == expected:
+        return True
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)\.dev\d+", actual)
+    if match is None:
+        return False
+    expected_parts = tuple(int(part) for part in expected.split("."))
+    actual_parts = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return actual_parts >= expected_parts
+
+
 def validate_runtime_versions(
     vane_distribution_version: str,
     vane_api_version: str,
 ) -> None:
-    """Fail fast unless every verified runtime identifier is exact."""
+    """Fail fast unless every verified runtime identifier matches or is newer."""
 
     actual_versions = (
         (
@@ -55,9 +75,10 @@ def validate_runtime_versions(
         ("Vane API", vane_api_version, EXPECTED_VANE_API_VERSION),
     )
     for label, actual, expected in actual_versions:
-        if actual != expected:
+        if not _vane_version_is_acceptable(actual, expected):
             raise _runtime_error(
-                f"{label} version mismatch; expected {expected!r}, got {actual!r}"
+                f"{label} version mismatch; expected {expected!r} or a newer "
+                f"local development build, got {actual!r}"
             )
 
 
