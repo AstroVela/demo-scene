@@ -155,9 +155,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ.setdefault("VANE_LOCAL_SHM_REF_BUDGET_BYTES", "2gb")
     require_real_vane_runtime()
 
-    from customer_service_audit.config import load_runtime_config
+    from customer_service_audit.config import ConfigError, load_runtime_config
 
-    config = load_runtime_config()
+    try:
+        config = load_runtime_config()
+    except ConfigError as exc:
+        print(f"runtime configuration error: {exc}", file=sys.stderr)
+        return 1
     configure_loopback_network(config.ai.base_url)
 
     from customer_service_audit.cli import main as cli_main

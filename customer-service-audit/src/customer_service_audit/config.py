@@ -14,6 +14,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "runtime.yml"
+EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "runtime.example.yml"
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -116,20 +117,23 @@ def _prefix(section: Mapping[str, Any], section_name: str, key: str) -> str:
     return value
 
 
-def _loopback_http_url(section: Mapping[str, Any], key: str) -> str:
-    path = f"ai.{key}"
+def _http_url(section: Mapping[str, Any], section_name: str, key: str) -> str:
+    """Validate an OpenAI-compatible HTTP(S) URL (loopback or remote host)."""
+
+    path = f"{section_name}.{key}"
     raw_value = section.get(key)
     if isinstance(raw_value, str) and _CONTROL_CHARACTERS.search(raw_value):
         raise ConfigError(f"{path} must not contain control characters")
-    value = _string(section, "ai", key)
+    value = _string(section, section_name, key)
     try:
         parsed = urlsplit(value)
-        hostname = parsed.hostname
-        _ = parsed.port
+        # Explicitly reading the port rejects non-numeric ports and ports
+        # outside 1-65535 instead of failing later at connect time.
+        port = parsed.port
     except ValueError as exc:
-        raise ConfigError(f"{path} must be a loopback HTTP URL") from exc
-    if parsed.scheme != "http" or hostname not in {"127.0.0.1", "localhost"}:
-        raise ConfigError(f"{path} must be a loopback HTTP URL")
+        raise ConfigError(f"{path} must be a valid http(s) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or port == 0:
+        raise ConfigError(f"{path} must be a valid http(s) URL")
     return value
 
 
@@ -189,9 +193,20 @@ def _finite_number(
 
 
 def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig:
-    """Load the sole, checked-in runtime configuration source."""
+    """Load the local runtime configuration source.
+
+    Only ``runtime.example.yml`` is checked into Git; each developer keeps a
+    personal, git-ignored ``runtime.yml`` next to it. When the default path is
+    missing, point at the example file instead of failing opaquely.
+    """
 
     config_path = Path(path)
+    if not config_path.exists() and config_path == DEFAULT_CONFIG_PATH:
+        raise ConfigError(
+            f"runtime configuration {config_path} not found. "
+            f"Copy the checked-in example and fill in your own endpoints and "
+            f"credentials:\n  cp {EXAMPLE_CONFIG_PATH} {DEFAULT_CONFIG_PATH}"
+        )
     try:
         payload = yaml.safe_load(config_path.read_text())
     except OSError as exc:
@@ -262,8 +277,8 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
         raise ConfigError("ai.provider must be openai")
     ai = AiConfig(
         provider=provider,
-        base_url=_loopback_http_url(ai_data, "base_url"),
-        health_url=_loopback_http_url(ai_data, "health_url"),
+        base_url=_http_url(ai_data, "ai", "base_url"),
+        health_url=_http_url(ai_data, "ai", "health_url"),
         api_key=_string(ai_data, "ai", "api_key"),
         model=_string(ai_data, "ai", "model"),
         concurrency=_positive_integer(ai_data, "ai", "concurrency"),

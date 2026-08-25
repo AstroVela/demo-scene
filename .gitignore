@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Local runtime configuration is personal; only the *.example.yml is checked in.
+customer-service-audit/runtime.yml
+
 __pycache__/
 *.py[cod]
 *.egg-info/
