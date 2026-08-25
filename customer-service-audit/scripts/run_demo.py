@@ -149,6 +149,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "VANE_UDF_UNREGISTER_TIMEOUT_MS",
         DEFAULT_VANE_UDF_UNREGISTER_TIMEOUT_MS,
     )
+    # macOS has no /proc or /dev/shm, so Vane's shared-memory budget auto
+    # detection fails there; pin a sane default for native (non-Ray) execution.
+    if sys.platform == "darwin":
+        os.environ.setdefault("VANE_LOCAL_SHM_REF_BUDGET_BYTES", "2gb")
     require_real_vane_runtime()
 
     from customer_service_audit.config import load_runtime_config
