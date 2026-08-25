@@ -65,6 +65,21 @@ def test_newer_local_development_build_is_accepted() -> None:
     # setuptools-scm builds from a checkout ahead of the v0.1.0 tag
     # report a development version such as 0.2.0.dev553.
     assert launcher.validate_runtime_versions("0.2.0.dev553", "0.2.0.dev553") is None
+    # A development build whose base release is strictly newer than the
+    # pinned release is a legitimate newer local build.
+    assert launcher._vane_version_is_acceptable("0.2.0.dev553", "0.1.0") is True
+
+
+def test_same_base_development_prerelease_is_rejected() -> None:
+    launcher = _load_launcher()
+
+    # Per PEP 440, 0.1.0.dev1 sorts before the final release 0.1.0, so a
+    # same-base development build is older than the pinned release and
+    # must not slip past the gate as a "newer version".
+    assert launcher._vane_version_is_acceptable("0.1.0.dev1", "0.1.0") is False
+    assert launcher._vane_version_is_acceptable("0.1.0.dev999", "0.1.0") is False
+    with pytest.raises(RuntimeError, match="distribution"):
+        launcher.validate_runtime_versions("0.1.0.dev1", "0.1.0")
 
 
 def test_old_or_unrelated_versions_are_rejected() -> None:

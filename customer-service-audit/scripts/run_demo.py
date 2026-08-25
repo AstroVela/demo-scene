@@ -46,8 +46,11 @@ def _vane_version_is_acceptable(actual: str, expected: str) -> bool:
 
     Public PyPI wheels report exactly the pinned version (``0.1.0``). A
     local source build reports a setuptools-scm development version such
-    as ``0.2.0.dev553``; accept those when their base release is at or
-    above the pinned one.
+    as ``0.2.0.dev553``; accept those only when their base release is
+    strictly newer than the pinned one. Per PEP 440 a development release
+    sorts *before* its final release (``0.1.0.dev1 < 0.1.0``), so a same
+    base such as ``0.1.0.dev1`` is older than the pinned ``0.1.0`` and
+    must be rejected rather than treated as "newer".
     """
 
     if actual == expected:
@@ -57,7 +60,7 @@ def _vane_version_is_acceptable(actual: str, expected: str) -> bool:
         return False
     expected_parts = tuple(int(part) for part in expected.split("."))
     actual_parts = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    return actual_parts >= expected_parts
+    return actual_parts > expected_parts
 
 
 def validate_runtime_versions(
