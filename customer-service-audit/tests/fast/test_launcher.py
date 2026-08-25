@@ -53,6 +53,46 @@ def test_install_hint_uses_the_public_release() -> None:
     assert launcher.INSTALL_HINT == "uv pip install 'vane-ai[openai]==0.1.0'"
 
 
+def test_exact_pinned_version_is_accepted() -> None:
+    launcher = _load_launcher()
+
+    assert launcher.validate_runtime_versions("0.1.0", "0.1.0") is None
+
+
+def test_newer_local_development_build_is_accepted() -> None:
+    launcher = _load_launcher()
+
+    # setuptools-scm builds from a checkout ahead of the v0.1.0 tag
+    # report a development version such as 0.2.0.dev553.
+    assert launcher.validate_runtime_versions("0.2.0.dev553", "0.2.0.dev553") is None
+    # A development build whose base release is strictly newer than the
+    # pinned release is a legitimate newer local build.
+    assert launcher._vane_version_is_acceptable("0.2.0.dev553", "0.1.0") is True
+
+
+def test_same_base_development_prerelease_is_rejected() -> None:
+    launcher = _load_launcher()
+
+    # Per PEP 440, 0.1.0.dev1 sorts before the final release 0.1.0, so a
+    # same-base development build is older than the pinned release and
+    # must not slip past the gate as a "newer version".
+    assert launcher._vane_version_is_acceptable("0.1.0.dev1", "0.1.0") is False
+    assert launcher._vane_version_is_acceptable("0.1.0.dev999", "0.1.0") is False
+    with pytest.raises(RuntimeError, match="distribution"):
+        launcher.validate_runtime_versions("0.1.0.dev1", "0.1.0")
+
+
+def test_old_or_unrelated_versions_are_rejected() -> None:
+    launcher = _load_launcher()
+
+    with pytest.raises(RuntimeError, match="distribution"):
+        launcher.validate_runtime_versions("0.0.9", "0.1.0")
+    with pytest.raises(RuntimeError, match="distribution"):
+        launcher.validate_runtime_versions("0.2.0.dev553.1", "0.1.0")
+    with pytest.raises(RuntimeError, match="API"):
+        launcher.validate_runtime_versions("0.1.0", "0.0.5")
+
+
 def test_loopback_bypass_preserves_proxy_for_remote_dependencies(monkeypatch):
     launcher = _load_launcher()
     proxy = "http://proxy.example:8080"
