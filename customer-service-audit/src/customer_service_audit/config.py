@@ -192,7 +192,7 @@ def _finite_number(
     return result
 
 
-def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig:
+def load_runtime_config(path: Path | str | None = None) -> RuntimeConfig:
     """Load the local runtime configuration source.
 
     Only ``runtime.example.yml`` is checked into Git; each developer keeps a
@@ -200,7 +200,7 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
     missing, point at the example file instead of failing opaquely.
     """
 
-    config_path = Path(path)
+    config_path = Path(DEFAULT_CONFIG_PATH if path is None else path)
     if not config_path.exists() and config_path == DEFAULT_CONFIG_PATH:
         raise ConfigError(
             f"runtime configuration {config_path} not found. "

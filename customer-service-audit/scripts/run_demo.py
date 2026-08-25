@@ -142,6 +142,20 @@ def configure_loopback_network(base_url: str) -> None:
         os.environ[name] = ",".join(entries)
 
 
+def _config_path_argument(argv: Sequence[str]) -> str | None:
+    """Return the path passed to ``--config`` in argv, if any."""
+
+    args = list(argv)
+    if "--config" in args:
+        position = args.index("--config")
+        if position + 1 < len(args):
+            return args[position + 1]
+    for item in args:
+        if item.startswith("--config="):
+            return item.split("=", 1)[1]
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Validate the runtime, configure loopback access, and dispatch a command."""
 
@@ -157,8 +171,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from customer_service_audit.config import ConfigError, load_runtime_config
 
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    # Honor an explicit --config here too: the launcher must not fail on the
+    # default runtime.yml when the caller points at another configuration,
+    # e.g. on a clean checkout that only has runtime.example.yml. The
+    # dispatched subcommand loads the same file again with the same rules.
+    config_path = _config_path_argument(arguments)
     try:
-        config = load_runtime_config()
+        config = load_runtime_config(config_path) if config_path else load_runtime_config()
     except ConfigError as exc:
         print(f"runtime configuration error: {exc}", file=sys.stderr)
         return 1
@@ -166,7 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from customer_service_audit.cli import main as cli_main
 
-    return cli_main(list(sys.argv[1:] if argv is None else argv))
+    return cli_main(arguments)
 
 
 if __name__ == "__main__":

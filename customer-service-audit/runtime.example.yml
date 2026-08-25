@@ -4,44 +4,48 @@ version: 1
 #
 #   cp runtime.example.yml runtime.yml
 #
+# The values below keep the documented, end-to-end verified execution shape:
+# the `ray` Runner with a local faster-whisper model and a loopback OpenAI
+# endpoint (see README.md and docs/runbook.md).
+#
 # Switch between Local and Ray without changing the relation pipeline.
-runner: local
+runner: ray
 
 # MinIO stores the synthetic call recordings and receives the analysis JSON.
+# These are the local development credentials documented in docs/runbook.md.
 minio:
   endpoint: 127.0.0.1:9000
-  access_key: your-minio-access-key
-  secret_key: your-minio-secret-key
+  access_key: vaneinsight
+  secret_key: vaneinsight_dev_password
   secure: false
   bucket: customer-service-audit-fixtures
   recordings_prefix: recordings/
   analysis_prefix: analysis/
 
-# Two ASR engines are supported:
-#   engine: openai-audio    — POST audio to an OpenAI-compatible
-#                             /audio/transcriptions endpoint (no local model,
-#                             no Hugging Face access needed). Configure
-#                             model/base_url/api_key/language/timeout_seconds.
-#   engine: faster-whisper  — local CTranslate2 inference. Configure
-#                             model (a Hub id like "small" or a local
-#                             directory), device/compute_type/beam_size.
+# faster-whisper transcribes each recording on CPU (deterministic, int8).
+#
+# Alternative: `engine: openai-audio` POSTs audio to an OpenAI-compatible
+# /audio/transcriptions gateway instead of downloading a local model; then
+# replace the keys below with model/base_url/api_key/language/timeout_seconds.
 asr:
-  engine: openai-audio
-  model: qwen-asr
-  base_url: https://your-model-gateway.example.com/api
-  api_key: your-asr-api-key
+  engine: faster-whisper
+  model: small
+  device: cpu
+  compute_type: int8
   language: zh
-  timeout_seconds: 120.0
+  beam_size: 5
   min_text_chars: 8
 
 # The OpenAI-compatible endpoint extracts call metrics from transcripts.
 # Vane 0.1.0 no longer accepts an inline api_key; the demo exports this
-# value as OPENAI_API_KEY for the OpenAI SDK before prompting.
+# value as OPENAI_API_KEY for the OpenAI SDK before prompting. Remote
+# gateways (http or https, any host) are accepted as well; keep real
+# api_key values out of Git.
 ai:
   provider: openai
   base_url: http://127.0.0.1:8001/v1
   health_url: http://127.0.0.1:8001/health
-  api_key: your-ai-api-key
+  api_key: dummy
   model: Qwen2.5-VL-3B-Instruct
   concurrency: 1
   timeout_seconds: 120.0

@@ -11,14 +11,47 @@ from customer_service_audit.config import (
     load_runtime_config,
 )
 
-_EXAMPLE_ASR_BASE_URL = "base_url: https://your-model-gateway.example.com/api"
-_EXAMPLE_ASR_TIMEOUT = "  timeout_seconds: 120.0\n"
+_FASTER_WHISPER_ASR_BLOCK = (
+    "asr:\n"
+    "  engine: faster-whisper\n"
+    "  model: small\n"
+    "  device: cpu\n"
+    "  compute_type: int8\n"
+    "  language: zh\n"
+    "  beam_size: 5\n"
+    "  min_text_chars: 8"
+)
+
+_OPENAI_AUDIO_ASR_TEMPLATE = (
+    "asr:\n"
+    "  engine: openai-audio\n"
+    "  model: qwen-asr\n"
+    "  base_url: {base_url}\n"
+    "  api_key: your-asr-api-key\n"
+    "  language: zh\n"
+    "{timeout_line}"
+    "  min_text_chars: 8"
+)
+
+_OPENAI_AUDIO_TIMEOUT_LINE = "  timeout_seconds: 120.0\n"
 
 
-def _example_config(tmp_path: Path) -> Path:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+def _example_content() -> str:
+    return EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
+
+
+def _openai_audio_config(
+    tmp_path: Path, base_url: str, timeout_line: str = _OPENAI_AUDIO_TIMEOUT_LINE
+) -> Path:
+    content = _example_content()
+    assert _FASTER_WHISPER_ASR_BLOCK in content
+    replacement = _OPENAI_AUDIO_ASR_TEMPLATE.format(
+        base_url=base_url, timeout_line=timeout_line
+    )
     path = tmp_path / "runtime.yml"
-    path.write_text(content, encoding="utf-8")
+    path.write_text(
+        content.replace(_FASTER_WHISPER_ASR_BLOCK, replacement), encoding="utf-8"
+    )
     return path
 
 
@@ -26,10 +59,13 @@ def test_example_config_loads_and_is_secret_light() -> None:
     # Tests run against the checked-in example so they pass on a clean clone.
     config = load_runtime_config(EXAMPLE_CONFIG_PATH)
     assert config.version == 1
-    assert config.runner in {"local", "ray"}
-    assert config.asr.engine == "openai-audio"
-    assert config.asr.base_url.startswith("https://")
+    # The example keeps the documented, verified execution shape.
+    assert config.runner == "ray"
+    assert config.asr.engine == "faster-whisper"
+    assert config.asr.model == "small"
     assert config.ai.provider == "openai"
+    assert config.ai.base_url == "http://127.0.0.1:8001/v1"
+    assert config.ai.health_url == "http://127.0.0.1:8001/health"
     assert config.minio.recordings_prefix.endswith("/")
     assert config.minio.analysis_prefix.endswith("/")
     # The run configuration row must stay free of credentials.
@@ -45,30 +81,29 @@ def test_missing_section_raises(tmp_path: Path) -> None:
 
 
 def test_invalid_runner_rejected(tmp_path: Path) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
     bad = tmp_path / "runtime.yml"
-    bad.write_text(content.replace("runner: local", "runner: spark"), encoding="utf-8")
+    bad.write_text(
+        _example_content().replace("runner: ray", "runner: spark"), encoding="utf-8"
+    )
     with pytest.raises(ConfigError):
         load_runtime_config(bad)
 
 
 def test_invalid_version_rejected(tmp_path: Path) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
     bad = tmp_path / "runtime.yml"
-    bad.write_text(content.replace("version: 1", "version: 2"), encoding="utf-8")
+    bad.write_text(
+        _example_content().replace("version: 1", "version: 2"), encoding="utf-8"
+    )
     with pytest.raises(ConfigError):
         load_runtime_config(bad)
 
 
 def test_remote_ai_url_accepted(tmp_path: Path) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
     remote = tmp_path / "runtime.yml"
     remote.write_text(
-        content.replace(
-            "http://127.0.0.1:8001/v1", "https://ai-gateway.internal/v1"
-        ).replace(
-            "http://127.0.0.1:8001/health", "https://ai-gateway.internal/health"
-        ),
+        _example_content()
+        .replace("http://127.0.0.1:8001/v1", "https://ai-gateway.internal/v1")
+        .replace("http://127.0.0.1:8001/health", "https://ai-gateway.internal/health"),
         encoding="utf-8",
     )
     config = load_runtime_config(remote)
@@ -77,10 +112,9 @@ def test_remote_ai_url_accepted(tmp_path: Path) -> None:
 
 
 def test_invalid_ai_url_rejected(tmp_path: Path) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
     bad = tmp_path / "runtime.yml"
     bad.write_text(
-        content.replace("http://127.0.0.1:8001/v1", "not-a-url"),
+        _example_content().replace("http://127.0.0.1:8001/v1", "not-a-url"),
         encoding="utf-8",
     )
     with pytest.raises(ConfigError):
@@ -98,17 +132,6 @@ def test_missing_default_config_gives_copy_hint(
         load_runtime_config(missing)
 
 
-def _openai_audio_config(tmp_path: Path, asr_base_url: str) -> Path:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-    assert _EXAMPLE_ASR_BASE_URL in content
-    path = tmp_path / "runtime.yml"
-    path.write_text(
-        content.replace(_EXAMPLE_ASR_BASE_URL, f"base_url: {asr_base_url}"),
-        encoding="utf-8",
-    )
-    return path
-
-
 def test_openai_audio_config_parses_with_timeout(tmp_path: Path) -> None:
     config = load_runtime_config(
         _openai_audio_config(tmp_path, "http://127.0.0.1:8005/v1")
@@ -120,18 +143,16 @@ def test_openai_audio_config_parses_with_timeout(tmp_path: Path) -> None:
 
 
 def test_openai_audio_requires_timeout_seconds(tmp_path: Path) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-    path = tmp_path / "runtime.yml"
-    path.write_text(content.replace(_EXAMPLE_ASR_TIMEOUT, ""), encoding="utf-8")
+    path = _openai_audio_config(tmp_path, "http://127.0.0.1:8005/v1", timeout_line="")
     with pytest.raises(ConfigError, match="asr.timeout_seconds"):
         load_runtime_config(path)
 
 
 @pytest.mark.parametrize("bad_timeout", ["  timeout_seconds: 0.0\n", "  timeout_seconds: -5.0\n"])
 def test_openai_audio_rejects_non_positive_timeout(tmp_path: Path, bad_timeout: str) -> None:
-    content = EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8")
-    path = tmp_path / "runtime.yml"
-    path.write_text(content.replace(_EXAMPLE_ASR_TIMEOUT, bad_timeout), encoding="utf-8")
+    path = _openai_audio_config(
+        tmp_path, "http://127.0.0.1:8005/v1", timeout_line=bad_timeout
+    )
     with pytest.raises(ConfigError, match="asr.timeout_seconds"):
         load_runtime_config(path)
 
