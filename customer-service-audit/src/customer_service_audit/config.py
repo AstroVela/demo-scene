@@ -41,9 +41,11 @@ class AsrConfig:
     language: str
     beam_size: int
     min_text_chars: int
-    # openai-audio (gateway ASR) carries its own endpoint and credential.
+    # openai-audio (gateway ASR) carries its own endpoint, credential and
+    # request timeout.
     base_url: str = ""
     api_key: str = ""
+    timeout_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -141,9 +143,12 @@ def _asr_http_url(section: Mapping[str, Any], key: str) -> str:
     value = _string(section, "asr", key)
     try:
         parsed = urlsplit(value)
+        # Explicitly reading the port rejects non-numeric ports and ports
+        # outside 1-65535 instead of failing later at connect time.
+        port = parsed.port
     except ValueError as exc:
         raise ConfigError(f"{path} must be a valid http(s) URL") from exc
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or port == 0:
         raise ConfigError(f"{path} must be a valid http(s) URL")
     return value
 
@@ -157,9 +162,13 @@ def _positive_integer(section: Mapping[str, Any], section_name: str, key: str) -
 
 
 def _finite_number(
-    section: Mapping[str, Any], key: str, *, allow_zero: bool
+    section: Mapping[str, Any],
+    section_name: str,
+    key: str,
+    *,
+    allow_zero: bool,
 ) -> float:
-    path = f"ai.{key}"
+    path = f"{section_name}.{key}"
     value = section.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{path} must be numeric")
@@ -238,6 +247,9 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
             min_text_chars=min_text_chars,
             base_url=_asr_http_url(asr_data, "base_url"),
             api_key=_string(asr_data, "asr", "api_key"),
+            timeout_seconds=_finite_number(
+                asr_data, "asr", "timeout_seconds", allow_zero=False
+            ),
         )
     else:
         raise ConfigError(
@@ -257,11 +269,13 @@ def load_runtime_config(path: Path | str = DEFAULT_CONFIG_PATH) -> RuntimeConfig
         concurrency=_positive_integer(ai_data, "ai", "concurrency"),
         timeout_seconds=_finite_number(
             ai_data,
+            "ai",
             "timeout_seconds",
             allow_zero=False,
         ),
         temperature=_finite_number(
             ai_data,
+            "ai",
             "temperature",
             allow_zero=True,
         ),
