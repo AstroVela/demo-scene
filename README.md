@@ -18,6 +18,8 @@ This repository showcases reproducible use cases built with [Vane](https://githu
 
 * **[Multimodal Training Data Release with Vane](multimodal-training-data)** — Processes document, text, image, and audio assets in typed Relation branches, then publishes accepted records and reviewable rejection artifacts with source lineage. **Choose this when** you are curating a multimodal training or evaluation dataset and need reproducible quality gates and release manifests.
 
+* **[Banking Voice Analysis with Vane and Jev](banking-voice-pipeline)** — Turns short Chinese banking recordings into reviewable business fields through CPU decoding, GPU Whisper transcription, native Jev judgments, and deterministic SQL queue mapping, with a keyword baseline that shares the same transcripts. **Choose this when** you need structured, human-reviewable judgments from call audio with an external model service.
+
 * **[Enterprise Agent Evidence Governance with Vane](enterprise-agent-evidence)** — Joins multimodal assets to business requirements, detects missing, conflicting, stale, or risky evidence, and produces governed Agent context and an ordered review queue. **Choose this when** an enterprise Agent needs a vetted context layer before retrieval or model execution.
 
 * **[Web Text Deduplication with Vane](web-text-deduplication)** — Finds exact and near-duplicate documents with MinHash, LSH candidate generation, exact Jaccard verification, and graph clustering, then selects stable representatives. **Choose this when** you need to clean a web or document corpus while retaining candidate diagnostics and reviewable duplicate clusters.

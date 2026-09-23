@@ -1,0 +1,4 @@
+faster-whisper>=1.2,<2
+huggingface-hub>=0.24
+numpy>=1.26
+pyarrow>=17
